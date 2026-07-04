@@ -1,0 +1,119 @@
+name: yarox
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: yarox-postgres
+    environment:
+      POSTGRES_USER: yarox
+      POSTGRES_PASSWORD: yaroxpassword
+      POSTGRES_DB: yarox
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U yarox -d yarox"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: yarox-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: minio/minio:RELEASE.2024-03-30T09-41-56Z
+    container_name: yarox-minio
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  qdrant:
+    image: qdrant/qdrant:v1.8.2
+    container_name: yarox-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: yarox-backend
+    command: uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
+    volumes:
+      - ./backend:/app
+      - ./datasets:/datasets
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://yarox:yaroxpassword@postgres:5432/yarox
+      - REDIS_URL=redis://redis:6379/0
+
+  celery_worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: yarox-celery-worker
+    command: celery -A workers.celery_app worker --loglevel=info
+    volumes:
+      - ./backend:/app
+      - ./datasets:/datasets
+    depends_on:
+      - redis
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://yarox:yaroxpassword@postgres:5432/yarox
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    container_name: yarox-frontend
+    ports:
+      - "3002:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
+  qdrant_data:

@@ -1,0 +1,6 @@
+{
+  "name": "Insider Threat",
+  "description": "Simulates an employee accessing sensitive files and transferring data.",
+  "duration_seconds": 300,
+  "difficulty": "Medium"
+}

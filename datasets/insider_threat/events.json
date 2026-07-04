@@ -1,0 +1,65 @@
+{
+  "events": [
+    {
+      "timestamp": "2024-03-01T08:00:00Z",
+      "hostname": "WORKSTATION-HR",
+      "user": "asmith",
+      "source": "Windows Security",
+      "event_type": "Login Success",
+      "severity": "INFO",
+      "metadata": {
+        "ip_address": "192.168.1.101"
+      }
+    },
+    {
+      "timestamp": "2024-03-01T08:05:00Z",
+      "hostname": "FS-01",
+      "user": "asmith",
+      "source": "File Server",
+      "event_type": "File Access",
+      "severity": "LOW",
+      "metadata": {
+        "file_path": "\\\\FS-01\\Finance\\Q1_Report.xlsx"
+      }
+    },
+    {
+      "timestamp": "2024-03-01T08:06:00Z",
+      "hostname": "FS-01",
+      "user": "asmith",
+      "source": "File Server",
+      "event_type": "File Access",
+      "severity": "MEDIUM",
+      "metadata": {
+        "file_path": "\\\\FS-01\\HR\\Employee_Salaries.csv",
+        "reason": "Unusual access pattern"
+      }
+    },
+    {
+      "timestamp": "2024-03-01T08:07:00Z",
+      "hostname": "WORKSTATION-HR",
+      "user": "asmith",
+      "source": "Sysmon",
+      "event_type": "Process Creation",
+      "severity": "HIGH",
+      "metadata": {
+        "process_name": "7z.exe",
+        "command_line": "7z a -tzip archive.zip \\\\FS-01\\HR\\Employee_Salaries.csv \\\\FS-01\\Finance\\Q1_Report.xlsx"
+      }
+    },
+    {
+      "timestamp": "2024-03-01T08:10:00Z",
+      "hostname": "WORKSTATION-HR",
+      "user": "asmith",
+      "source": "Network Monitor",
+      "event_type": "Network Connection",
+      "severity": "HIGH",
+      "metadata": {
+        "destination_ip": "203.0.113.50",
+        "destination_port": 443,
+        "bytes_sent": 15000000,
+        "process_name": "chrome.exe",
+        "domain": "mega.nz"
+      }
+    }
+  ]
+}

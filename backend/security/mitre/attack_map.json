@@ -1,0 +1,50 @@
+{
+  "T1059": {
+    "name": "Command and Scripting Interpreter",
+    "tactic": "Execution"
+  },
+  "T1059.001": {
+    "name": "PowerShell",
+    "tactic": "Execution"
+  },
+  "T1078": {
+    "name": "Valid Accounts",
+    "tactic": "Defense Evasion, Persistence, Privilege Escalation, Initial Access"
+  },
+  "T1021": {
+    "name": "Remote Services",
+    "tactic": "Lateral Movement"
+  },
+  "T1055": {
+    "name": "Process Injection",
+    "tactic": "Defense Evasion, Privilege Escalation"
+  },
+  "T1110": {
+    "name": "Brute Force",
+    "tactic": "Credential Access"
+  },
+  "T1003": {
+    "name": "OS Credential Dumping",
+    "tactic": "Credential Access"
+  },
+  "T1068": {
+    "name": "Exploitation for Privilege Escalation",
+    "tactic": "Privilege Escalation"
+  },
+  "T1566": {
+    "name": "Phishing",
+    "tactic": "Initial Access"
+  },
+  "T1048": {
+    "name": "Exfiltration Over Alternative Protocol",
+    "tactic": "Exfiltration"
+  },
+  "T1105": {
+    "name": "Ingress Tool Transfer",
+    "tactic": "Command and Control"
+  },
+  "T1547": {
+    "name": "Boot or Logon Autostart Execution",
+    "tactic": "Persistence, Privilege Escalation"
+  }
+}

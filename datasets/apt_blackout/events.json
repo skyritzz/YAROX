@@ -1,0 +1,87 @@
+[
+    {
+        "timestamp": "2026-07-04T12:01:00Z",
+        "source": "Windows Event Log",
+        "event_type": "Login Failed",
+        "user_name": "admin",
+        "hostname": "WIN-SRV-01",
+        "metadata": {
+            "ip_address": "185.15.22.1",
+            "reason": "Invalid credentials",
+            "logon_type": 3
+        }
+    },
+    {
+        "timestamp": "2026-07-04T12:01:15Z",
+        "source": "Windows Event Log",
+        "event_type": "Login Failed",
+        "user_name": "admin",
+        "hostname": "WIN-SRV-01",
+        "metadata": {
+            "ip_address": "185.15.22.1",
+            "reason": "Invalid credentials",
+            "logon_type": 3
+        }
+    },
+    {
+        "timestamp": "2026-07-04T12:02:45Z",
+        "source": "Windows Event Log",
+        "event_type": "Login Success",
+        "user_name": "admin",
+        "hostname": "WIN-SRV-01",
+        "metadata": {
+            "ip_address": "185.15.22.1",
+            "logon_type": 3
+        }
+    },
+    {
+        "timestamp": "2026-07-04T12:03:10Z",
+        "source": "Sysmon",
+        "event_type": "Process Creation",
+        "user_name": "admin",
+        "hostname": "WIN-SRV-01",
+        "metadata": {
+            "process_name": "powershell.exe",
+            "command_line": "powershell -enc JABzAD0ATgBlAHcALQBPAGIAagBlAGMAdAAgAEkATwAuAE0AZQBtAG8AcgB5AFMAdAByAGUAYQBtACgAWwBDAG8AbgB2AGUAcgB0AF0AOgA6AEYAcgBvAG0AQgBhAHMAZQA2ADQAUwB0AHIAaQBuAGcAKAAiAEgA...==",
+            "parent_process": "cmd.exe"
+        }
+    },
+    {
+        "timestamp": "2026-07-04T12:05:22Z",
+        "source": "Sysmon",
+        "event_type": "Registry Value Set",
+        "user_name": "SYSTEM",
+        "hostname": "WIN-SRV-01",
+        "metadata": {
+            "target_object": "HKLM\\SYSTEM\\CurrentControlSet\\Services\\EventLog\\System\\ImagePath",
+            "details": "Modified by powershell.exe"
+        }
+    },
+    {
+        "timestamp": "2026-07-04T12:15:05Z",
+        "source": "Network IDS",
+        "event_type": "Lateral Movement",
+        "user_name": "admin",
+        "hostname": "WIN-SRV-01",
+        "metadata": {
+            "destination_ip": "10.0.0.55",
+            "destination_port": 445,
+            "protocol": "SMB",
+            "bytes_transferred": 150422
+        }
+    },
+    {
+        "timestamp": "2026-07-04T12:45:30Z",
+        "source": "Firewall",
+        "event_type": "Data Exfiltration",
+        "user_name": "SYSTEM",
+        "hostname": "WIN-SRV-01",
+        "metadata": {
+            "destination_ip": "45.33.22.11",
+            "destination_port": 443,
+            "bytes_sent": 850422000,
+            "bytes_received": 1024,
+            "protocol": "HTTPS"
+        }
+    }
+]
