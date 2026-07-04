@@ -17,7 +17,7 @@ Think of it as:
 
 ## 🚀 Demo Preview
 
-![YAROX Demo](assets/demo.gif)
+https://github.com/skyritzz/YAROX/raw/main/assets/yarox_demo.mp4
 
 ---
 
