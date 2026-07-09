@@ -55,12 +55,20 @@ async def get_dashboard_stats(db: AsyncSession = Depends(get_db)):
             "message": f"Replay Started ({latest_session.scenario_name}) - Speed: {latest_session.speed_multiplier}x"
         })
     
-    recent_events_result = await db.execute(select(Event).order_by(desc(Event.timestamp)).limit(5))
-    recent_events = recent_events_result.scalars().all()
-    for ev in recent_events:
+    from models.investigation import AgentAction
+    
+    recent_actions_result = await db.execute(select(AgentAction).order_by(desc(AgentAction.created_at)).limit(15))
+    recent_actions = recent_actions_result.scalars().all()
+    for action in recent_actions:
+        # Some agent actions might have empty string or just thought
+        msg = action.thought or action.action_taken or "Analyzing data"
+        if len(msg) > 120:
+            msg = msg[:120] + "..."
+            
         activity_feed.append({
-            "timestamp": ev.timestamp.isoformat(),
-            "message": f"Parsed {ev.source}: {ev.event_type}"
+            "timestamp": action.created_at.isoformat(),
+            "message": msg,
+            "agent_name": action.agent_name
         })
         
     # Sort activity descending

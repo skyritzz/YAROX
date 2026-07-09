@@ -1,50 +1,130 @@
+"use client"
+
 import Link from "next/link";
-import { LayoutDashboard, List, Activity, Settings, Info, Network, GitMerge, FileText } from "lucide-react";
+import { usePathname } from "next/navigation";
+import { useState } from "react";
+import {
+  Home,
+  FolderSearch,
+  Network,
+  GitBranch,
+  FolderOpen,
+  FileText,
+  Settings,
+  ChevronLeft,
+  ChevronRight,
+  Shield,
+} from "lucide-react";
+
+const navItems = [
+  { href: "/", label: "Command Center", icon: Home },
+  { href: "/investigations", label: "Investigations", icon: FolderSearch },
+  { href: "/attack-graph", label: "Attack Graph", icon: Network },
+  { href: "/architecture", label: "Agent Workflow", icon: GitBranch },
+  { href: "/evidence", label: "Evidence", icon: FolderOpen },
+  { href: "/reports", label: "Reports", icon: FileText },
+];
+
+const bottomItems = [
+  { href: "/settings", label: "Settings", icon: Settings },
+];
 
 export default function Sidebar() {
+  const pathname = usePathname();
+  const [collapsed, setCollapsed] = useState(false);
+
+  const isActive = (href: string) => {
+    if (href === "/") return pathname === "/";
+    return pathname.startsWith(href);
+  };
+
   return (
-    <div className="w-72 border-r border-zinc-800 bg-zinc-950 flex flex-col h-screen p-4">
-      <div className="mb-10 px-4 mt-4">
-        <h1 className="text-3xl font-bold tracking-tight text-white mb-2">YAROX</h1>
-        <p className="text-xs text-zinc-400 leading-relaxed font-medium">Autonomous Investigation<br/>Platform</p>
+    <div
+      className={`${
+        collapsed ? "w-[72px]" : "w-[240px]"
+      } bg-white flex flex-col h-screen transition-all duration-200 ease-in-out shrink-0 relative`}
+      style={{ boxShadow: "1px 0 0 var(--border-default), 4px 0 12px rgba(16,24,40,0.03)" }}
+    >
+      {/* Brand */}
+      <div className={`flex items-center gap-3 px-5 pt-6 pb-8 ${collapsed ? "justify-center" : ""}`}>
+        <div className="w-9 h-9 rounded-xl bg-[var(--accent-color)] flex items-center justify-center shrink-0">
+          <Shield className="w-5 h-5 text-white" />
+        </div>
+        {!collapsed && (
+          <div className="overflow-hidden">
+            <h1 className="text-lg font-bold tracking-tight text-[var(--text-primary)] leading-tight">
+              YAROX
+            </h1>
+            <p className="text-[10px] text-[var(--text-secondary)] font-medium leading-tight">
+              AI Security Command Center
+            </p>
+          </div>
+        )}
       </div>
 
-      <nav className="flex-1 space-y-2">
-        <Link href="/" className="flex items-center gap-3 px-4 py-2 text-sm font-medium rounded-md hover:bg-zinc-800 text-zinc-300 hover:text-white transition-colors">
-          <LayoutDashboard className="w-4 h-4" />
-          Dashboard
-        </Link>
-        <Link href="/events" className="flex items-center gap-3 px-4 py-2 text-sm font-medium rounded-md hover:bg-zinc-800 text-zinc-300 hover:text-white transition-colors">
-          <List className="w-4 h-4" />
-          Raw Events
-        </Link>
-        <Link href="/investigations" className="flex items-center gap-3 px-4 py-2 text-sm font-medium rounded-md hover:bg-zinc-800 text-zinc-300 hover:text-white transition-colors">
-          <FileText className="w-4 h-4 text-emerald-400" />
-          AI Case Inbox
-        </Link>
-        <Link href="/attack-graph" className="flex items-center gap-3 px-4 py-2 text-sm font-medium rounded-md hover:bg-zinc-800 text-zinc-300 hover:text-white transition-colors">
-          <GitMerge className="w-4 h-4 text-amber-400" />
-          Attack Graph
-        </Link>
-        <Link href="/timeline" className="flex items-center gap-3 px-4 py-2 text-sm font-medium rounded-md hover:bg-zinc-800 text-zinc-300 hover:text-white transition-colors">
-          <Activity className="w-4 h-4" />
-          Simulation Controls
-        </Link>
-        <Link href="/architecture" className="flex items-center gap-3 px-4 py-2 text-sm font-medium rounded-md hover:bg-zinc-800 text-zinc-300 hover:text-white transition-colors">
-          <Network className="w-4 h-4 text-purple-400" />
-          Agent Workflow
-        </Link>
+      {/* Navigation */}
+      <nav className="px-3 space-y-1">
+        {navItems.map((item) => {
+          const active = isActive(item.href);
+          return (
+            <Link
+              key={item.href}
+              href={item.href}
+              title={collapsed ? item.label : undefined}
+              className={`flex items-center gap-3 px-3 py-2.5 text-sm font-medium rounded-xl transition-all duration-150 relative group ${
+                active
+                  ? "bg-[var(--accent-light)] text-[var(--accent-color)]"
+                  : "text-[var(--text-secondary)] hover:bg-[var(--muted)] hover:text-[var(--text-primary)]"
+              } ${collapsed ? "justify-center" : ""}`}
+            >
+              {/* Active indicator bar */}
+              {active && (
+                <div className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-5 rounded-r-full bg-[var(--accent-color)]" />
+              )}
+              <item.icon className={`w-[18px] h-[18px] shrink-0 ${active ? "text-[var(--accent-color)]" : ""}`} />
+              {!collapsed && <span>{item.label}</span>}
+            </Link>
+          );
+        })}
       </nav>
 
-      <div className="mt-auto space-y-2 pt-4 border-t border-zinc-800">
-        <Link href="/settings" className="flex items-center gap-3 px-4 py-2 text-sm font-medium rounded-md hover:bg-zinc-800 text-zinc-400 hover:text-white transition-colors">
-          <Settings className="w-4 h-4" />
-          Settings
-        </Link>
-        <Link href="/about" className="flex items-center gap-3 px-4 py-2 text-sm font-medium rounded-md hover:bg-zinc-800 text-zinc-400 hover:text-white transition-colors">
-          <Info className="w-4 h-4" />
-          About
-        </Link>
+      {/* Bottom items */}
+      <div className="mt-auto px-3 pb-4 space-y-1 border-t border-[var(--border-default)] pt-3">
+        {bottomItems.map((item) => {
+          const active = isActive(item.href);
+          return (
+            <Link
+              key={item.href}
+              href={item.href}
+              title={collapsed ? item.label : undefined}
+              className={`flex items-center gap-3 px-3 py-2.5 text-sm font-medium rounded-xl transition-all duration-150 ${
+                active
+                  ? "bg-[var(--accent-light)] text-[var(--accent-color)]"
+                  : "text-[var(--text-secondary)] hover:bg-[var(--muted)] hover:text-[var(--text-primary)]"
+              } ${collapsed ? "justify-center" : ""}`}
+            >
+              <item.icon className="w-[18px] h-[18px] shrink-0" />
+              {!collapsed && <span>{item.label}</span>}
+            </Link>
+          );
+        })}
+
+        {/* Collapse toggle */}
+        <button
+          onClick={() => setCollapsed(!collapsed)}
+          className={`flex items-center gap-3 px-3 py-2.5 text-sm font-medium rounded-xl transition-all duration-150 w-full text-[var(--text-secondary)] hover:bg-[var(--muted)] hover:text-[var(--text-primary)] ${
+            collapsed ? "justify-center" : ""
+          }`}
+        >
+          {collapsed ? (
+            <ChevronRight className="w-[18px] h-[18px] shrink-0" />
+          ) : (
+            <>
+              <ChevronLeft className="w-[18px] h-[18px] shrink-0" />
+              <span>Collapse</span>
+            </>
+          )}
+        </button>
       </div>
     </div>
   );

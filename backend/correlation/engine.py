@@ -33,7 +33,7 @@ class CorrelationEngine:
                     InvestigationStatus.OPEN, 
                     InvestigationStatus.ANALYZING
                 ]),
-                InvestigationCase.title == f"Automated Detection: {technique_name}",
+                InvestigationCase.title == f"{technique_name}",
                 InvestigationCase.updated_at >= time_threshold
             )
             .where(entity_clause)

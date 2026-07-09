@@ -21,6 +21,17 @@ async def run_replay_task(engine: ReplayEngine, scenario_name: str, session_id: 
     except Exception as e:
         print(f"Replay task failed: {e}")
         engine.is_playing = False
+        from database.session import AsyncSessionLocal
+        from models.replay import ReplaySession
+        import uuid
+        async with AsyncSessionLocal() as db:
+            try:
+                db_session = await db.get(ReplaySession, uuid.UUID(session_id))
+                if db_session:
+                    db_session.status = "FAILED"
+                    await db.commit()
+            except Exception:
+                pass
 
 @router.post("/start", response_model=ReplaySessionResponse)
 async def start_replay(request: ReplayStartRequest, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)):

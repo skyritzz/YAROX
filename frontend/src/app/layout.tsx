@@ -4,11 +4,15 @@ import "./globals.css";
 import Providers from "@/components/providers";
 import Sidebar from "@/components/sidebar";
 
-const inter = Inter({ subsets: ["latin"] });
+const inter = Inter({
+  subsets: ["latin"],
+  weight: ["400", "500", "600", "700"],
+  variable: "--font-inter",
+});
 
 export const metadata: Metadata = {
-  title: "YAROX - Autonomous Security Investigation",
-  description: "Enterprise-grade AI platform that autonomously investigates cybersecurity incidents.",
+  title: "YAROX — AI Security Command Center",
+  description: "AI agents autonomously investigating cybersecurity incidents in real time. Watch reasoning, handoffs, and evidence collection as they happen.",
 };
 
 export default function RootLayout({
@@ -17,8 +21,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className="dark">
-      <body className={`${inter.className} bg-zinc-950 text-zinc-50 antialiased min-h-screen flex`}>
+    <html lang="en">
+      <body className={`${inter.className} antialiased min-h-screen flex`}>
         <Providers>
           <Sidebar />
           <main className="flex-1 flex flex-col min-h-screen overflow-hidden">

@@ -4,12 +4,25 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* ================================================================
+   YAROX Design System — Light-first tokens
+   All values abstracted as custom properties so a dark theme 
+   can be added later as a pure token-swap on :root → .dark
+   ================================================================ */
+
 @theme inline {
+  /* --- Core surfaces --- */
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-surface: var(--surface);
+  --color-surface-glass: var(--surface-glass);
+
+  /* --- Font stacks --- */
   --font-sans: var(--font-sans);
   --font-mono: var(--font-geist-mono);
   --font-heading: var(--font-sans);
+
+  /* --- shadcn semantic tokens --- */
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -39,6 +52,8 @@
   --color-popover: var(--popover);
   --color-card-foreground: var(--card-foreground);
   --color-card: var(--card);
+
+  /* --- Radii --- */
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
@@ -48,88 +63,145 @@
   --radius-4xl: calc(var(--radius) * 2.6);
 }
 
+/* ================================================================
+   Light-first root tokens
+   ================================================================ */
 :root {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --radius: 0.625rem;
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+  /* --- Backgrounds & surfaces --- */
+  --background: #FAFAFA;
+  --background-gradient: radial-gradient(ellipse at top left, #F4F5F7 0%, #FAFAFA 60%);
+  --surface: #FFFFFF;
+  --surface-glass: rgba(255, 255, 255, 0.7);
+
+  /* --- Typography --- */
+  --foreground: #101828;
+  --text-primary: #101828;
+  --text-secondary: #667085;
+
+  /* --- Accent (indigo) --- */
+  --accent-color: #4F46E5;
+  --accent-light: #EEF2FF;
+  --accent-hover: #4338CA;
+
+  /* --- Borders --- */
+  --border-default: #EAECF0;
+  --border-subtle: #E4E4E7;
+
+  /* --- Shadows --- */
+  --shadow-card: 0 1px 2px rgba(16, 24, 40, 0.04), 0 4px 12px rgba(16, 24, 40, 0.04);
+  --shadow-card-hover: 0 4px 16px rgba(16, 24, 40, 0.08), 0 1px 4px rgba(16, 24, 40, 0.04);
+  --shadow-lg: 0 8px 24px rgba(16, 24, 40, 0.08);
+
+  /* --- Severity palette (ONLY for threat data) --- */
+  --severity-critical: #DC2626;
+  --severity-critical-bg: #FEF2F2;
+  --severity-critical-border: #FECACA;
+  --severity-high: #EA580C;
+  --severity-high-bg: #FFF7ED;
+  --severity-high-border: #FDBA74;
+  --severity-medium: #D97706;
+  --severity-medium-bg: #FFFBEB;
+  --severity-medium-border: #FDE68A;
+  --severity-low: #2563EB;
+  --severity-low-bg: #EFF6FF;
+  --severity-low-border: #BFDBFE;
+  --severity-info: #6B7280;
+  --severity-info-bg: #F9FAFB;
+  --severity-info-border: #E5E7EB;
+
+  /* --- Status / success --- */
+  --success: #16A34A;
+  --success-bg: #F0FDF4;
+
+  /* --- Agent colors (for avatars & tinted circles) --- */
+  --agent-triage: #3B82F6;
+  --agent-triage-bg: #EFF6FF;
+  --agent-timeline: #10B981;
+  --agent-timeline-bg: #ECFDF5;
+  --agent-threat-intel: #F59E0B;
+  --agent-threat-intel-bg: #FFFBEB;
+  --agent-soc-lead: #8B5CF6;
+  --agent-soc-lead-bg: #F5F3FF;
+
+  /* --- shadcn mapped tokens --- */
+  --card: #FFFFFF;
+  --card-foreground: #101828;
+  --popover: #FFFFFF;
+  --popover-foreground: #101828;
+  --primary: #4F46E5;
+  --primary-foreground: #FFFFFF;
+  --secondary: #F9FAFB;
+  --secondary-foreground: #344054;
+  --muted: #F2F4F7;
+  --muted-foreground: #667085;
+  --accent: #EEF2FF;
+  --accent-foreground: #4F46E5;
+  --destructive: #DC2626;
+  --border: #EAECF0;
+  --input: #EAECF0;
+  --ring: #4F46E5;
+
+  /* --- Charts --- */
+  --chart-1: #4F46E5;
+  --chart-2: #10B981;
+  --chart-3: #F59E0B;
+  --chart-4: #EF4444;
+  --chart-5: #8B5CF6;
+
+  /* --- Radius --- */
+  --radius: 0.75rem;
+
+  /* --- Sidebar --- */
+  --sidebar: #FFFFFF;
+  --sidebar-foreground: #344054;
+  --sidebar-primary: #4F46E5;
+  --sidebar-primary-foreground: #FFFFFF;
+  --sidebar-accent: #EEF2FF;
+  --sidebar-accent-foreground: #4F46E5;
+  --sidebar-border: #EAECF0;
+  --sidebar-ring: #4F46E5;
 }
 
-.dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
-}
-
+/* ================================================================
+   Base layer
+   ================================================================ */
 @layer base {
   * {
     @apply border-border outline-ring/50;
   }
   body {
-    @apply bg-background text-foreground;
+    background: var(--background);
+    background-image: var(--background-gradient);
+    background-attachment: fixed;
+    color: var(--foreground);
+    min-height: 100vh;
   }
   html {
     @apply font-sans;
   }
 }
 
+/* ================================================================
+   Utility classes
+   ================================================================ */
 @layer utilities {
+  /* --- Glassmorphism surface --- */
+  .glass-surface {
+    background: var(--surface-glass);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+    border: 1px solid rgba(0, 0, 0, 0.06);
+  }
+
+  /* --- Card shadow --- */
+  .shadow-card {
+    box-shadow: var(--shadow-card);
+  }
+  .shadow-card-hover {
+    box-shadow: var(--shadow-card-hover);
+  }
+
+  /* --- Custom scrollbar (light) --- */
   .custom-scrollbar::-webkit-scrollbar {
     width: 6px;
   }
@@ -137,9 +209,151 @@
     background: transparent;
   }
   .custom-scrollbar::-webkit-scrollbar-thumb {
-    @apply bg-zinc-800 rounded-full;
+    background: rgba(0, 0, 0, 0.1);
+    border-radius: 9999px;
   }
   .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-    @apply bg-zinc-700;
+    background: rgba(0, 0, 0, 0.2);
   }
+
+  /* --- Hidden scrollbar --- */
+  .hide-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .hide-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+}
+
+/* ================================================================
+   Keyframe animations
+   ================================================================ */
+@keyframes agent-pulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.85;
+    transform: scale(1.02);
+  }
+}
+
+@keyframes slide-in-left {
+  from {
+    opacity: 0;
+    transform: translateX(-12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes fade-slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes dash-flow {
+  to {
+    stroke-dashoffset: -20;
+  }
+}
+
+@keyframes count-up {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes dot-pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+/* Animation utility classes */
+.animate-agent-pulse {
+  animation: agent-pulse 2s ease-in-out infinite;
+}
+
+.animate-slide-in-left {
+  animation: slide-in-left 250ms ease-out both;
+}
+
+.animate-fade-slide-up {
+  animation: fade-slide-up 200ms ease-out both;
+}
+
+.animate-dash-flow {
+  animation: dash-flow 1s linear infinite;
+}
+
+.animate-count-up {
+  animation: count-up 300ms ease-out both;
+}
+
+.animate-dot-pulse {
+  animation: dot-pulse 2s ease-in-out infinite;
+}
+
+.animate-spin-slow {
+  animation: spin 8s linear infinite;
+}
+
+/* ================================================================
+   React Flow overrides (light theme)
+   ================================================================ */
+.react-flow__background {
+  background-color: var(--background) !important;
+}
+
+.react-flow__minimap {
+  background: var(--surface-glass) !important;
+  backdrop-filter: blur(16px) !important;
+  -webkit-backdrop-filter: blur(16px) !important;
+  border: 1px solid rgba(0, 0, 0, 0.06) !important;
+  border-radius: 12px !important;
+}
+
+.react-flow__controls {
+  background: var(--surface) !important;
+  border: 1px solid var(--border-default) !important;
+  border-radius: 9999px !important;
+  box-shadow: var(--shadow-card) !important;
+  display: flex !important;
+  flex-direction: row !important;
+  overflow: hidden !important;
+}
+
+.react-flow__controls button {
+  background: transparent !important;
+  border: none !important;
+  border-right: 1px solid var(--border-default) !important;
+  color: var(--text-secondary) !important;
+  fill: var(--text-secondary) !important;
+}
+
+.react-flow__controls button:last-child {
+  border-right: none !important;
+}
+
+.react-flow__controls button:hover {
+  background: var(--muted) !important;
 }

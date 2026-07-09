@@ -1,58 +1,206 @@
-import { Handle, Position } from '@xyflow/react';
-import { User, Monitor, Terminal, Globe } from 'lucide-react';
+import { Handle, Position, BaseEdge, getBezierPath, EdgeProps, EdgeLabelRenderer } from "@xyflow/react"
+import { User, Monitor, Terminal, Globe, Clock, FileText, ExternalLink } from "lucide-react"
+import * as Tooltip from '@radix-ui/react-tooltip'
 
-const NodeWrapper = ({ children, className, borderClass }: any) => (
-  <div className={`px-4 py-3 rounded-xl border bg-zinc-950/80 backdrop-blur-md shadow-lg flex flex-col gap-3 min-w-[220px] ${borderClass} ${className}`}>
-    <Handle type="target" position={Position.Top} className="w-2 h-2 !bg-zinc-500 !border-zinc-800" />
-    {children}
-    <Handle type="source" position={Position.Bottom} className="w-2 h-2 !bg-zinc-500 !border-zinc-800" />
+interface NodeData {
+  label: string
+  isCritical?: boolean
+  type?: string
+}
+
+const NodeWrapper = ({
+  children,
+  iconBg,
+  borderColor,
+  isCritical,
+  data
+}: {
+  children: React.ReactNode
+  iconBg: string
+  borderColor: string
+  isCritical?: boolean
+  data?: NodeData
+}) => (
+  <div className="group relative">
+    <Tooltip.Provider delayDuration={200}>
+      <Tooltip.Root>
+        <Tooltip.Trigger asChild>
+          {/* Node Body */}
+          <div
+            className="px-5 py-4 rounded-2xl bg-white flex flex-col gap-4 min-w-[220px] transition-all duration-200 hover:-translate-y-1 relative cursor-default"
+            style={{
+              boxShadow: isCritical 
+                ? `0 0 20px -2px ${borderColor}, var(--shadow-card)`
+                : "var(--shadow-card)",
+              border: isCritical ? `2px solid ${borderColor}` : `1px solid var(--border-default)`,
+            }}
+          >
+            <Handle
+              type="target"
+              position={Position.Top}
+              className="w-2 h-2 !bg-[var(--border-default)] !border-white transition-colors group-hover:!bg-[var(--accent-color)]"
+            />
+            {children}
+            <Handle
+              type="source"
+              position={Position.Bottom}
+              className="w-2 h-2 !bg-[var(--border-default)] !border-white transition-colors group-hover:!bg-[var(--accent-color)]"
+            />
+          </div>
+        </Tooltip.Trigger>
+
+        <Tooltip.Portal>
+          <Tooltip.Content
+            sideOffset={12}
+            collisionPadding={20}
+            className="w-64 bg-white/95 backdrop-blur-md rounded-xl p-4 shadow-xl border border-[var(--border-default)] z-50 animate-in fade-in-0 zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2"
+          >
+            <div className="flex items-center gap-2 mb-2">
+              <Clock className="w-3.5 h-3.5 text-[var(--text-secondary)]" />
+              <span className="text-[10px] text-[var(--text-secondary)] font-mono">First seen: 2023-10-27 10:01:00 UTC</span>
+            </div>
+            <div className="flex items-center gap-2 mb-3">
+              <FileText className="w-3.5 h-3.5 text-[var(--text-secondary)]" />
+              <span className="text-xs text-[var(--text-primary)] font-medium">3 Evidence Items</span>
+            </div>
+            <a href="/investigations" className="inline-flex items-center gap-1.5 text-xs text-[var(--accent-color)] hover:underline font-medium">
+              View Investigation <ExternalLink className="w-3 h-3" />
+            </a>
+            <Tooltip.Arrow className="fill-white drop-shadow-sm" width={14} height={7} />
+          </Tooltip.Content>
+        </Tooltip.Portal>
+      </Tooltip.Root>
+    </Tooltip.Provider>
   </div>
-);
+)
 
-export const UserNode = ({ data }: any) => (
-  <NodeWrapper borderClass="border-blue-900/60 shadow-[0_0_15px_rgba(30,58,138,0.25)]">
-    <div className="flex items-center gap-2 border-b border-blue-900/30 pb-2">
-      <div className="bg-blue-950/50 p-1.5 rounded-md border border-blue-900/30">
-        <User className="w-4 h-4 text-blue-400" />
-      </div>
-      <span className="text-xs font-bold text-blue-400 tracking-wider">USER</span>
-    </div>
-    <div className="text-zinc-200 font-mono text-sm truncate" title={data.label}>{data.label}</div>
-  </NodeWrapper>
-);
+export const WiderArcEdge = (props: EdgeProps) => {
+  const { sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, markerEnd, style, label, labelStyle, labelBgStyle, labelBgPadding, labelBgBorderRadius } = props;
+  
+  // High curvature generates a much wider arc so it naturally dodges obstacles in the middle column
+  const [edgePath, labelX, labelY] = getBezierPath({
+    sourceX,
+    sourceY,
+    sourcePosition,
+    targetX,
+    targetY,
+    targetPosition,
+    curvature: 0.8,
+  });
 
-export const HostNode = ({ data }: any) => (
-  <NodeWrapper borderClass="border-emerald-900/60 shadow-[0_0_15px_rgba(6,78,59,0.25)]">
-    <div className="flex items-center gap-2 border-b border-emerald-900/30 pb-2">
-      <div className="bg-emerald-950/50 p-1.5 rounded-md border border-emerald-900/30">
-        <Monitor className="w-4 h-4 text-emerald-400" />
-      </div>
-      <span className="text-xs font-bold text-emerald-400 tracking-wider">HOST</span>
-    </div>
-    <div className="text-zinc-200 font-mono text-sm truncate" title={data.label}>{data.label}</div>
-  </NodeWrapper>
-);
+  return (
+    <>
+      <BaseEdge path={edgePath} markerEnd={markerEnd} style={style} />
+      {label && (
+        <EdgeLabelRenderer>
+          <div
+            className="nodrag nopan"
+            style={{
+              position: 'absolute',
+              transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
+              pointerEvents: 'all',
+              background: 'rgba(255,255,255,0.95)',
+              padding: '2px 8px',
+              borderRadius: '16px',
+              border: `1px solid ${style?.stroke || 'var(--border-default)'}`,
+              fontSize: '10px',
+              fontWeight: 700,
+              color: style?.stroke === 'var(--severity-critical)' ? 'var(--severity-critical)' : 'var(--text-secondary)',
+              letterSpacing: '0.02em',
+            }}
+          >
+            {label}
+          </div>
+        </EdgeLabelRenderer>
+      )}
+    </>
+  );
+}
 
-export const ProcessNode = ({ data }: any) => (
-  <NodeWrapper borderClass="border-red-900/60 shadow-[0_0_15px_rgba(153,27,27,0.25)]">
-    <div className="flex items-center gap-2 border-b border-red-900/30 pb-2">
-      <div className="bg-red-950/50 p-1.5 rounded-md border border-red-900/30">
-        <Terminal className="w-4 h-4 text-red-400" />
+export const UserNode = ({ data }: { data: NodeData }) => (
+  <NodeWrapper iconBg="var(--agent-triage-bg)" borderColor="var(--agent-triage)" isCritical={data.isCritical} data={data}>
+    <div className={`flex items-center gap-3 border-b pb-3 ${data.isCritical ? 'border-[var(--agent-triage)]/20' : 'border-[var(--border-default)]'}`}>
+      <div
+        className="w-9 h-9 rounded-xl flex items-center justify-center shadow-sm"
+        style={{ backgroundColor: "var(--agent-triage-bg)" }}
+      >
+        <User className="w-4.5 h-4.5" style={{ color: "var(--agent-triage)" }} />
       </div>
-      <span className="text-xs font-bold text-red-400 tracking-wider">PROCESS</span>
+      <span
+        className="text-[11px] font-bold tracking-wider uppercase"
+        style={{ color: "var(--agent-triage)" }}
+      >
+        USER
+      </span>
     </div>
-    <div className="text-zinc-200 font-mono text-sm truncate" title={data.label}>{data.label}</div>
+    <div className="text-[13px] font-medium text-[var(--text-primary)] font-mono truncate" title={data.label}>
+      {data.label}
+    </div>
   </NodeWrapper>
-);
+)
 
-export const IPNode = ({ data }: any) => (
-  <NodeWrapper borderClass="border-fuchsia-900/60 shadow-[0_0_15px_rgba(112,26,117,0.25)]">
-    <div className="flex items-center gap-2 border-b border-fuchsia-900/30 pb-2">
-      <div className="bg-fuchsia-950/50 p-1.5 rounded-md border border-fuchsia-900/30">
-        <Globe className="w-4 h-4 text-fuchsia-400" />
+export const HostNode = ({ data }: { data: NodeData }) => (
+  <NodeWrapper iconBg="var(--agent-timeline-bg)" borderColor="var(--agent-timeline)" isCritical={data.isCritical} data={data}>
+    <div className={`flex items-center gap-3 border-b pb-3 ${data.isCritical ? 'border-[var(--agent-timeline)]/20' : 'border-[var(--border-default)]'}`}>
+      <div
+        className="w-9 h-9 rounded-xl flex items-center justify-center shadow-sm"
+        style={{ backgroundColor: "var(--agent-timeline-bg)" }}
+      >
+        <Monitor className="w-4.5 h-4.5" style={{ color: "var(--agent-timeline)" }} />
       </div>
-      <span className="text-xs font-bold text-fuchsia-400 tracking-wider">IP ADDRESS</span>
+      <span
+        className="text-[11px] font-bold tracking-wider uppercase"
+        style={{ color: "var(--agent-timeline)" }}
+      >
+        HOST
+      </span>
     </div>
-    <div className="text-zinc-200 font-mono text-sm truncate" title={data.label}>{data.label}</div>
+    <div className="text-[13px] font-medium text-[var(--text-primary)] font-mono truncate" title={data.label}>
+      {data.label}
+    </div>
   </NodeWrapper>
-);
+)
+
+export const ProcessNode = ({ data }: { data: NodeData }) => (
+  <NodeWrapper iconBg="var(--severity-critical-bg)" borderColor="var(--severity-critical)" isCritical={data.isCritical} data={data}>
+    <div className={`flex items-center gap-3 border-b pb-3 ${data.isCritical ? 'border-[var(--severity-critical)]/20' : 'border-[var(--border-default)]'}`}>
+      <div
+        className="w-9 h-9 rounded-xl flex items-center justify-center shadow-sm"
+        style={{ backgroundColor: "var(--severity-critical-bg)" }}
+      >
+        <Terminal className="w-4.5 h-4.5" style={{ color: "var(--severity-critical)" }} />
+      </div>
+      <span
+        className="text-[11px] font-bold tracking-wider uppercase"
+        style={{ color: "var(--severity-critical)" }}
+      >
+        PROCESS
+      </span>
+    </div>
+    <div className="text-[13px] font-medium text-[var(--text-primary)] font-mono truncate" title={data.label}>
+      {data.label}
+    </div>
+  </NodeWrapper>
+)
+
+export const IPNode = ({ data }: { data: NodeData }) => (
+  <NodeWrapper iconBg="var(--agent-soc-lead-bg)" borderColor="var(--agent-soc-lead)" isCritical={data.isCritical} data={data}>
+    <div className={`flex items-center gap-3 border-b pb-3 ${data.isCritical ? 'border-[var(--agent-soc-lead)]/20' : 'border-[var(--border-default)]'}`}>
+      <div
+        className="w-9 h-9 rounded-xl flex items-center justify-center shadow-sm"
+        style={{ backgroundColor: "var(--agent-soc-lead-bg)" }}
+      >
+        <Globe className="w-4.5 h-4.5" style={{ color: "var(--agent-soc-lead)" }} />
+      </div>
+      <span
+        className="text-[11px] font-bold tracking-wider uppercase"
+        style={{ color: "var(--agent-soc-lead)" }}
+      >
+        IP ADDRESS
+      </span>
+    </div>
+    <div className="text-[13px] font-medium text-[var(--text-primary)] font-mono truncate" title={data.label}>
+      {data.label}
+    </div>
+  </NodeWrapper>
+)

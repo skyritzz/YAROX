@@ -74,7 +74,7 @@ export default function TimelinePage() {
             <div className="flex gap-4 items-center">
               <div className="flex-1">
                 <label className="text-sm font-medium text-zinc-400 mb-1 block">Scenario</label>
-                <Select value={scenario} onValueChange={setScenario} disabled={isPlaying}>
+                <Select value={scenario} onValueChange={(v) => v && setScenario(v)} disabled={isPlaying}>
                   <SelectTrigger className="bg-zinc-950 border-zinc-800">
                     <SelectValue placeholder="Select scenario" />
                   </SelectTrigger>
@@ -87,7 +87,7 @@ export default function TimelinePage() {
               </div>
               <div className="w-32">
                 <label className="text-sm font-medium text-zinc-400 mb-1 block">Speed</label>
-                <Select value={speed} onValueChange={setSpeed} disabled={isPlaying}>
+                <Select value={speed} onValueChange={(v) => v && setSpeed(v)} disabled={isPlaying}>
                   <SelectTrigger className="bg-zinc-950 border-zinc-800">
                     <SelectValue placeholder="Speed" />
                   </SelectTrigger>

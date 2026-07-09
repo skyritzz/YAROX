@@ -35,7 +35,7 @@ class DetectionEngine:
                 if not case:
                     # Create New Case
                     case = InvestigationCase(
-                        title=f"Automated Detection: {explanation['mitre_technique_name']}",
+                        title=f"{explanation['mitre_technique_name']}",
                         description=explanation['description'],
                         status=InvestigationStatus.OPEN,
                         severity=explanation['severity']

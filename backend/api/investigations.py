@@ -12,7 +12,11 @@ router = APIRouter()
 
 @router.get("/")
 async def get_investigations(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(InvestigationCase).order_by(InvestigationCase.created_at.desc()))
+    result = await db.execute(
+        select(InvestigationCase)
+        .options(selectinload(InvestigationCase.evidence_items))
+        .order_by(InvestigationCase.created_at.desc())
+    )
     return result.scalars().all()
 
 @router.get("/{id}")
@@ -35,6 +39,22 @@ async def get_investigation(id: str, db: AsyncSession = Depends(get_db)):
 async def analyze_investigation(id: str, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)):
     background_tasks.add_task(orchestrator.run_investigation, db, id)
     return {"message": "Analysis started in background."}
+
+from pydantic import BaseModel
+
+class StatusUpdateRequest(BaseModel):
+    status: str
+
+@router.patch("/{id}/status")
+async def update_investigation_status(id: str, request: StatusUpdateRequest, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(InvestigationCase).where(InvestigationCase.id == id))
+    case = result.scalar_one_or_none()
+    if not case:
+        raise HTTPException(status_code=404, detail="Investigation not found")
+        
+    case.status = request.status
+    await db.commit()
+    return {"message": "Status updated", "status": case.status}
 
 @router.get("/{id}/export")
 async def export_investigation(id: str, db: AsyncSession = Depends(get_db)):

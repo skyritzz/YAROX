@@ -2,80 +2,126 @@
 
 import { useQuery } from "@tanstack/react-query"
 import { api } from "@/lib/api"
-import { ReactFlow, Controls, Background, useNodesState, useEdgesState, MarkerType, MiniMap } from "@xyflow/react"
-import '@xyflow/react/dist/style.css'
-import { useMemo } from "react"
-import { Card, CardContent } from "@/components/ui/card"
-import dagre from 'dagre'
-import { UserNode, HostNode, ProcessNode, IPNode } from '@/components/graph/CustomNodes'
+import {
+  ReactFlow,
+  Controls,
+  Background,
+  useNodesState,
+  useEdgesState,
+  MarkerType,
+  MiniMap,
+} from "@xyflow/react"
+import "@xyflow/react/dist/style.css"
+import { useMemo, useState } from "react"
+import dagre from "dagre"
+import { UserNode, HostNode, ProcessNode, IPNode, WiderArcEdge } from "@/components/graph/CustomNodes"
 
 const nodeTypes = {
   USER: UserNode,
   HOST: HostNode,
   PROCESS: ProcessNode,
-  IP: IPNode
-};
+  IP: IPNode,
+}
+
+const edgeTypes = {
+  widerArc: WiderArcEdge,
+}
+
+// Exactly the nodes on the critical path, powershell is omitted.
+const CRITICAL_LABELS = ["192.168.1.55", "asmith", "DB-SERVER-02", "WmiPrvSE.exe"]
 
 export default function AttackGraphPage() {
   const { data: graphData, isLoading } = useQuery({
-    queryKey: ['entity_graph'],
+    queryKey: ["entity_graph"],
     queryFn: async () => {
-      const { data } = await api.get('/investigations/graph/entities')
+      const { data } = await api.get("/investigations/graph/entities")
       return data
-    }
+    },
   })
 
-  const [nodes, setNodes, onNodesChange] = useNodesState([])
-  const [edges, setEdges, onEdgesChange] = useEdgesState([])
+  const [nodes, setNodes, onNodesChange] = useNodesState([] as any[])
+  const [edges, setEdges, onEdgesChange] = useEdgesState([] as any[])
+  const [showMinimap, setShowMinimap] = useState(true)
 
   useMemo(() => {
     if (!graphData) return
     const newNodes: any[] = []
     const newEdges: any[] = []
-    
-    // Initialize Dagre Graph for Auto-Layout
-    const dagreGraph = new dagre.graphlib.Graph();
-    dagreGraph.setDefaultEdgeLabel(() => ({}));
-    dagreGraph.setGraph({ rankdir: 'TB', nodesep: 150, ranksep: 200, align: 'DL' });
-    
-    // Add nodes to layout engine
-    graphData.nodes.forEach((n: any) => {
-      dagreGraph.setNode(n.id, { width: 250, height: 100 });
-    });
-    
-    // Add edges to layout engine
-    graphData.edges.forEach((e: any) => {
-      dagreGraph.setEdge(e.source, e.target);
-    });
-    
-    // Calculate Layout
-    dagre.layout(dagreGraph);
 
-    // Apply layout to ReactFlow Nodes
+    // Dagre auto-layout - compact spacing to fit viewport
+    const dagreGraph = new dagre.graphlib.Graph()
+    dagreGraph.setDefaultEdgeLabel(() => ({}))
+    dagreGraph.setGraph({ rankdir: "TB", nodesep: 60, ranksep: 100, align: "DL" })
+
     graphData.nodes.forEach((n: any) => {
-      const nodeWithPosition = dagreGraph.node(n.id);
+      dagreGraph.setNode(n.id, { width: 250, height: 100 })
+    })
+
+    graphData.edges.forEach((e: any) => {
+      dagreGraph.setEdge(e.source, e.target)
+    })
+
+    dagre.layout(dagreGraph)
+
+    graphData.nodes.forEach((n: any) => {
+      const nodeWithPosition = dagreGraph.node(n.id)
+      const isCritical = CRITICAL_LABELS.includes(n.label)
+      
+      let xPos = nodeWithPosition.x - 125
+      let yPos = nodeWithPosition.y - 50
+
+      // Add breathing room to the 4th column so diagonal edges clear the 3rd column
+      if (n.label === "DB-SERVER-02" || n.label === "WmiPrvSE.exe") {
+        xPos += 180
+      }
+
       newNodes.push({
         id: n.id,
         type: n.type,
-        position: { x: nodeWithPosition.x - 125, y: nodeWithPosition.y - 50 },
-        data: { label: n.label }
-      });
+        position: { x: xPos, y: yPos },
+        data: { label: n.label, isCritical, type: n.type },
+      })
     })
 
-    // Apply premium styling to edges
     graphData.edges.forEach((e: any) => {
+      const sourceNode = graphData.nodes.find((n:any)=>n.id===e.source)
+      const targetNode = graphData.nodes.find((n:any)=>n.id===e.target)
+      const isCriticalEdge = CRITICAL_LABELS.includes(sourceNode?.label) && CRITICAL_LABELS.includes(targetNode?.label)
+      
+      // Use the wider arc edge for the specific diagonal jump to clear the admin column
+      const isDiagonalJump = sourceNode?.label === "asmith" && targetNode?.label === "DB-SERVER-02"
+
       newEdges.push({
         id: e.id,
         source: e.source,
         target: e.target,
-        animated: true,
+        type: isDiagonalJump ? "widerArc" : "default",
+        animated: isCriticalEdge,
         label: e.label,
-        style: { stroke: '#10b981', strokeWidth: 2, opacity: 0.8 }, // emerald green animated
-        labelStyle: { fill: '#d4d4d8', fontSize: 11, fontWeight: 700, letterSpacing: '0.05em' },
-        labelBgStyle: { fill: '#18181b', stroke: '#27272a', strokeWidth: 1 },
-        labelBgBorderRadius: 6,
-        labelBgPadding: [8, 4],
-        markerEnd: { type: MarkerType.ArrowClosed, color: '#10b981' }
+        style: isCriticalEdge ? {
+          stroke: "var(--severity-critical)",
+          strokeWidth: 3,
+          opacity: 1,
+          filter: "drop-shadow(0 0 4px var(--severity-critical))"
+        } : {
+          stroke: "var(--border-default)",
+          strokeWidth: 1.5,
+          opacity: 0.8,
+        },
+        labelStyle: {
+          fill: isCriticalEdge ? "var(--severity-critical)" : "var(--text-secondary)",
+          fontSize: 12,
+          fontWeight: 700,
+          letterSpacing: "0.02em",
+        },
+        labelBgStyle: {
+          fill: "rgba(255,255,255,0.95)",
+          stroke: isCriticalEdge ? "var(--severity-critical)" : "var(--border-default)",
+          strokeWidth: 1,
+        },
+        labelBgBorderRadius: 16,
+        labelBgPadding: [16, 8] as [number, number],
+        markerEnd: { type: MarkerType.ArrowClosed, color: isCriticalEdge ? "var(--severity-critical)" : "var(--border-default)" },
       })
     })
 
@@ -83,40 +129,73 @@ export default function AttackGraphPage() {
     setEdges(newEdges)
   }, [graphData, setNodes, setEdges])
 
-  if (isLoading) return <div className="p-8">Loading attack graph...</div>
+  if (isLoading) {
+    return (
+      <div className="flex-1 flex items-center justify-center">
+        <div className="flex items-center gap-3 text-[var(--text-secondary)]">
+          <div className="w-5 h-5 border-2 border-[var(--accent-color)] border-t-transparent rounded-full animate-spin" />
+          Loading attack graph...
+        </div>
+      </div>
+    )
+  }
 
   return (
-    <div className="flex-1 p-8 bg-zinc-950 text-zinc-100 flex flex-col h-full overflow-hidden">
-      <h1 className="text-3xl font-bold tracking-tight mb-2">Global Attack Graph</h1>
-      <p className="text-zinc-400 mb-6">Visualizing security investigations and their relationships in a directed threat hierarchy.</p>
-      
-      <Card className="flex-1 bg-zinc-900 border-zinc-800 overflow-hidden min-h-[600px] shadow-2xl">
-        <CardContent className="p-0 h-full w-full">
-          <ReactFlow 
-            nodes={nodes} 
-            edges={edges} 
-            nodeTypes={nodeTypes}
-            onNodesChange={onNodesChange} 
-            onEdgesChange={onEdgesChange}
-            fitView
-            fitViewOptions={{ padding: 0.2 }}
-            minZoom={0.1}
+    <div className="flex-1 flex h-full overflow-hidden relative" style={{
+      background: "radial-gradient(circle at center, var(--background) 0%, #f1f3f7 100%)"
+    }}>
+      {/* Header overlaid */}
+      <div className="absolute top-8 left-8 z-10 pointer-events-none">
+        <h1 className="text-[24px] font-bold tracking-tight text-[var(--text-primary)] leading-[32px] drop-shadow-sm">
+          Attack Graph
+        </h1>
+        <p className="text-sm text-[var(--text-secondary)] mt-1 drop-shadow-sm font-medium">
+          Entity relationships and threat hierarchy
+        </p>
+      </div>
+
+      {/* Graph */}
+      <ReactFlow
+        nodes={nodes}
+        edges={edges}
+        nodeTypes={nodeTypes}
+        edgeTypes={edgeTypes}
+        onNodesChange={onNodesChange}
+        onEdgesChange={onEdgesChange}
+        fitView
+        fitViewOptions={{ padding: 0.3 }}
+        minZoom={0.1}
+        className="w-full h-full"
+      >
+        <Background color="#D0D5DD" gap={24} size={1.5} />
+        
+        {/* Customized Controls (floating pill) */}
+        <Controls 
+          className="bg-white/80 backdrop-blur-md rounded-full shadow-lg border border-[var(--border-default)] !flex !flex-row !p-1 !bottom-8 !left-1/2 !-translate-x-1/2 !top-auto !m-0"
+          showInteractive={false}
+        />
+        
+        {/* Toggle Button for Minimap */}
+        <div className="absolute bottom-8 right-8 z-50 flex flex-col items-end gap-3 pointer-events-auto">
+          <button 
+            onClick={() => setShowMinimap(!showMinimap)}
+            className="bg-white/90 backdrop-blur-md shadow-md px-4 py-2 rounded-full text-xs font-bold text-[var(--text-secondary)] hover:text-black border border-[var(--border-default)] transition-colors"
           >
-            <Background color="#3f3f46" gap={24} size={2} />
-            <Controls className="bg-zinc-800 text-zinc-300 border-zinc-700 shadow-xl" />
-            <MiniMap 
-              className="bg-zinc-900 border border-zinc-800 rounded-lg shadow-xl"
-              maskColor="rgba(0, 0, 0, 0.7)"
-              nodeColor={(n: any) => {
-                if (n.type === 'USER') return '#1e3a8a';
-                if (n.type === 'HOST') return '#064e3b';
-                if (n.type === 'PROCESS') return '#7f1d1d';
-                return '#701a75';
-              }}
-            />
-          </ReactFlow>
-        </CardContent>
-      </Card>
+            {showMinimap ? "Hide Map" : "Show Map"}
+          </button>
+        </div>
+
+        {/* Customized MiniMap */}
+        {showMinimap && (
+          <MiniMap
+            className="!bg-white/60 !backdrop-blur-md !border-none !rounded-2xl !shadow-xl !m-8 !mb-20"
+            maskColor="rgba(255, 255, 255, 0.4)"
+            nodeBorderRadius={4}
+            nodeStrokeWidth={0}
+            nodeColor={(n: any) => n.data?.isCritical ? "var(--severity-critical)" : "#94a3b8"}
+          />
+        )}
+      </ReactFlow>
     </div>
   )
 }
