@@ -1025,3 +1025,52 @@ Created [`docs/YAROX_PHASE_5_INVESTIGATION_WORKBENCH.md`](file:///Users/ayushish
 ### Implementation Status
 * **Phase 5A Design Status:** COMPLETE.
 * **Phase 5 Implementation Status:** **NOT IMPLEMENTED** (Application code, schemas, and frontend remain unchanged in this design phase).
+
+---
+
+## 2026-08-24 — Phase 5.1: Case Management Backend Implementation
+
+### Objective
+Implement the backend foundation of the Investigation Workbench (Phase 5.1): database schema migrations, SQLAlchemy models, Pydantic schemas, and REST APIs for analyst case notes, case assignment, manual severity override, case reopening, resolution attribution, and immutable audit logging.
+
+### Changes Implemented
+1. **SQLAlchemy Models (`backend/models/investigation.py`, `backend/models/__init__.py`):**
+   * Extended `InvestigationCase` with `assigned_to_user_id` (nullable FK $\rightarrow$ `users.id`), `resolved_by_user_id` (nullable FK $\rightarrow$ `users.id`), and `resolved_at` (nullable `DateTime(timezone=True)`).
+   * Created `CaseNote` model (`id`, `case_id`, `user_id`, `content`, `created_at`, `updated_at`).
+   * Created `AuditLog` model (`id`, `case_id`, `user_id`, `action`, `details`, `timestamp`).
+2. **Pydantic Schemas (`backend/schemas/case_management.py`):**
+   * Defined DTOs and validation rules for `CaseNoteCreate`, `CaseNoteResponse`, `CaseAssignRequest`, `CaseAssignResponse`, `SeverityOverrideRequest`, `SeverityOverrideResponse`, `CaseReopenRequest`, `CaseReopenResponse`, and `AuditLogResponse`.
+3. **Audit Helper (`backend/core/audit.py`):**
+   * Implemented `record_audit_log` async helper ensuring uniform, append-only audit recording across all case mutations.
+4. **Database Migration (`backend/alembic/versions/7a3e8b1d9c4f_phase5_case_management.py`):**
+   * Added migration revision `7a3e8b1d9c4f` with `down_revision = '8532d6f9c999'` creating `case_notes`, `audit_logs`, foreign keys, and indexes.
+5. **REST APIs (`backend/api/investigations.py`):**
+   * `GET /investigations/{id}/notes`: List case notes chronologically with author user details.
+   * `POST /investigations/{id}/notes`: Create analyst note with RBAC (`ANALYST` or `ADMIN`) and append `NOTE_CREATED` audit log.
+   * `PATCH /investigations/{id}/assign`: Assign or unassign case to a user, validate target user existence, and append `CASE_ASSIGNED` audit log.
+   * `PATCH /investigations/{id}/severity`: Override case severity with mandatory justification reason and append `SEVERITY_OVERRIDDEN` audit log.
+   * `POST /investigations/{id}/reopen`: Reopen case from terminal states (`RESOLVED`, `FALSE_POSITIVE`) back to `OPEN`, clear resolution attribution, and append `CASE_REOPENED` audit log. Reject reopening from non-terminal states (`400 Bad Request`).
+   * `GET /investigations/{id}/audit`: Retrieve append-only chronological audit records.
+   * Enhanced `PATCH /investigations/{id}/status`: Automatically populates `resolved_by_user_id` and `resolved_at` on `RESOLVED` and `FALSE_POSITIVE`, preserves Celery memory indexing gate on `RESOLVED`, and records audit logs.
+6. **E2E Test Suite (`backend/tests/test_phase5_case_management.py`):**
+   * Added 8 dedicated unit and integration tests covering notes, assignment, severity override, reopen validation, resolution attribution, audit immutability, and RBAC enforcement.
+
+### Test Results
+* **Phase 5.1 Test Suite:** 8/8 PASSED.
+* **Full Test Suite:** 71/71 PASSED (Phase 4A Security: 14/14, Phase 4B Ingestion: 12/12, Phase 4C Evaluation: 11/11, Phase 4C Remediation: 7/7, Phase 4C.1 Qdrant: 4/4, Phase 4C.1.1 Memory Pipeline: 15/15, Phase 5.1 Case Management: 8/8).
+* **Regressions:** 0 regressions across all existing endpoints and evaluation benchmarks.
+
+### Definition of Done & Limitations
+* **Definition of Done:**
+  - [x] Schema extensions for `investigation_cases`, `case_notes`, and `audit_logs` created and migrated.
+  - [x] Case notes API operational with author attribution and validation.
+  - [x] Case assignment API operational with user validation and audit trail.
+  - [x] Severity override API requires non-empty justification reason and records audit entry.
+  - [x] Reopen API permits reopening only from terminal states (`RESOLVED`, `FALSE_POSITIVE`) and resets resolution fields.
+  - [x] Status updates track `resolved_by_user_id` and `resolved_at` while preserving Celery memory gate.
+  - [x] Audit logs are strictly append-only without delete/update routes.
+  - [x] Full automated test suite passes with 0 regressions.
+* **Remaining Limitations / Next Steps:**
+  - Frontend UI components for the tabbed Investigation Workbench, note composer, assignee dropdown, and audit trail will be implemented in Phase 5.2.
+* **Status:** **COMPLETE AND VERIFIED**.
+
