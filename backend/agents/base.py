@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Callable, Awaitable
+import time
 from sqlalchemy.ext.asyncio import AsyncSession
 from models.investigation import InvestigationCase, AgentExecution, AgentReasoningStep, AgentToolCall
 from websocket.investigation_ws import manager as ws_manager
@@ -67,20 +68,7 @@ class BaseAgent(ABC):
             execution.reasoning_step_count += 1
         elif step_type == "tool_call_started":
             execution.tool_call_count += 1
-            
-        # Create an AgentToolCall record for the UI to display
-        if step_type == "tool_call_complete":
-            from models.investigation import AgentToolCall
-            tool_call = AgentToolCall(
-                execution_id=execution.id,
-                tool_name=content.get("tool", "unknown_tool"),
-                input={"action": "execute", "parameters": content.get("input", {})},
-                output={"result": content.get("text", "Tool execution completed.")},
-                duration_ms=content.get("duration_ms", 850.0),
-                status="Completed"
-            )
-            db.add(tool_call)
-            
+
         await db.commit()
 
         # Broadcast unified event over WS
@@ -98,17 +86,85 @@ class BaseAgent(ABC):
             "tool_call_id": tool_call_id
         })
 
-    async def call_llm_with_timeout(self, coroutine, timeout_seconds: int = 120):
+    async def run_tool(
+        self,
+        db: AsyncSession,
+        execution: AgentExecution,
+        tool_name: str,
+        tool_input: Dict[str, Any],
+        operation: Callable[[], Awaitable[Any]],
+        summarize_output: Callable[[Any], Dict[str, Any]],
+    ) -> Any:
+        """
+        Executes a real tool operation and records a measured AgentToolCall.
+
+        ``tool_input`` and the ``summarize_output`` result are stored as metadata; callers must
+        pass descriptive fields (counts, identifiers), never raw secrets or full evidence payloads.
+        Failures are recorded with status "Failed" and the exception is re-raised.
+        """
+        await self.emit_step(db, execution, "tool_call_started", {
+            "text": f"Running tool {tool_name}.",
+            "tool": tool_name,
+            "input": tool_input,
+        })
+
+        started_at = datetime.now(timezone.utc)
+        start = time.perf_counter()
+        result = None
+        error: Optional[BaseException] = None
+        try:
+            result = await operation()
+        except Exception as e:
+            error = e
+        duration_ms = (time.perf_counter() - start) * 1000.0
+        completed_at = datetime.now(timezone.utc)
+
+        tool_call = AgentToolCall(
+            id=uuid.uuid4(),
+            execution_id=execution.id,
+            tool_name=tool_name,
+            input=tool_input,
+            output=summarize_output(result) if error is None else None,
+            duration_ms=duration_ms,
+            status="Completed" if error is None else "Failed",
+            started_at=started_at,
+            completed_at=completed_at,
+            error_message=None if error is None else f"{type(error).__name__}: {error}",
+        )
+        db.add(tool_call)
+        execution.tool_execution_time_ms = (execution.tool_execution_time_ms or 0.0) + duration_ms
+        await db.commit()
+
+        await self.emit_step(db, execution, "tool_call_complete", {
+            "text": f"Tool {tool_name} {'completed' if error is None else 'failed'} in {duration_ms:.1f} ms.",
+            "tool": tool_name,
+            "status": tool_call.status,
+            "duration_ms": duration_ms,
+            "output": tool_call.output,
+            "error": tool_call.error_message,
+        }, tool_call_id=str(tool_call.id))
+
+        if error is not None:
+            raise error
+        return result
+
+    async def call_llm_with_timeout(self, coroutine, timeout_seconds: int = 120, execution: Optional[AgentExecution] = None):
         """
         Wraps an LLM generation call with a strict timeout.
         If it times out or errors, raises an exception to be caught for degraded fallback.
+        When an execution is given, the measured wall-clock LLM time is added to it.
         """
+        start = time.perf_counter()
         try:
             return await asyncio.wait_for(coroutine, timeout=timeout_seconds)
         except asyncio.TimeoutError:
             raise Exception("LLM request timed out.")
         except Exception as e:
             raise Exception(f"LLM request failed: {str(e)}")
+        finally:
+            if execution is not None:
+                elapsed_ms = (time.perf_counter() - start) * 1000.0
+                execution.llm_execution_time_ms = (execution.llm_execution_time_ms or 0.0) + elapsed_ms
 
     @abstractmethod
     async def analyze(self, db: AsyncSession, case: InvestigationCase, **kwargs) -> Dict[str, Any]:

@@ -1,10 +1,11 @@
 import httpx
 import json
+from core.config import settings
 
 class LLMService:
-    def __init__(self, model="llama3.1", base_url="http://host.docker.internal:11434"):
+    def __init__(self, model: str, base_url: str):
         self.model = model
-        self.base_url = base_url
+        self.base_url = base_url.rstrip("/")
 
     async def generate(self, prompt: str, context: str = "", json_format: bool = False) -> str:
         async with httpx.AsyncClient(timeout=120.0) as client:
@@ -24,4 +25,4 @@ class LLMService:
                 print(f"LLM Error: {e}")
                 return ""
 
-llm_service = LLMService()
+llm_service = LLMService(model=settings.OLLAMA_MODEL, base_url=settings.OLLAMA_BASE_URL)

@@ -16,3 +16,5 @@ class Event(Base):
     severity = Column(String, index=True, nullable=False) # INFO, LOW, MEDIUM, HIGH, CRITICAL
     raw_log = Column(JSONB, nullable=False)
     metadata_ = Column("metadata", JSONB, nullable=True) # metadata is used by sqlalchemy internally, so we alias it
+    # SHA-256 over the canonical event content at first storage (see core/integrity.py). NULL for legacy rows.
+    payload_sha256 = Column(String(64), index=True, nullable=True)

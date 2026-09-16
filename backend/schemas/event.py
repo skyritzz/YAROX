@@ -13,9 +13,17 @@ class EventResponse(BaseModel):
     severity: str
     raw_log: Dict[str, Any]
     metadata_: Optional[Dict[str, Any]]
+    payload_sha256: Optional[str] = None
 
     class Config:
         from_attributes = True
+
+class EventIntegrityResponse(BaseModel):
+    event_id: uuid.UUID
+    hash_version: str
+    stored_sha256: Optional[str]
+    computed_sha256: str
+    verified: Optional[bool]
 
 class InvestigationEvent(BaseModel):
     event_id: str

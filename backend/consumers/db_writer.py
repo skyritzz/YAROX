@@ -2,6 +2,7 @@ import asyncio
 from core.events import event_bus
 from database.session import AsyncSessionLocal
 from models.event import Event
+from core.integrity import compute_event_hash
 from typing import Dict, Any
 
 async def handle_event_normalized(data: Dict[str, Any]):
@@ -11,7 +12,7 @@ async def handle_event_normalized(data: Dict[str, Any]):
     """
     async with AsyncSessionLocal() as session:
         try:
-            db_event = Event(**data)
+            db_event = Event(**data, payload_sha256=compute_event_hash(data))
             session.add(db_event)
             await session.commit()
             await session.refresh(db_event)

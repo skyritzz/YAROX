@@ -607,7 +607,7 @@ export default function CommandCenter() {
         {/* ============================================================
             INFRASTRUCTURE STATUS
             ============================================================ */}
-        {health?.infrastructure && (
+        {health?.components && (
           <div
             className="bg-white rounded-2xl p-5"
             style={{
@@ -616,41 +616,34 @@ export default function CommandCenter() {
             }}
           >
             <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3">
-              Infrastructure
+              Infrastructure{" "}
+              <span className="text-xs font-normal text-[var(--text-secondary)]">
+                ({health.status}, checked {format(new Date(health.checked_at), "HH:mm:ss")})
+              </span>
             </h3>
             <div className="flex flex-wrap gap-2">
-              {Object.entries(health.infrastructure).map(
-                ([key, value]: [string, any]) => {
-                  const isHealthy =
-                    value === "Healthy" || value === "Active"
-                  return (
-                    <div
-                      key={key}
-                      className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium"
-                      style={{
-                        backgroundColor: isHealthy
-                          ? "var(--success-bg)"
-                          : "var(--severity-critical-bg)",
-                        color: isHealthy
-                          ? "var(--success)"
-                          : "var(--severity-critical)",
-                      }}
-                    >
-                      <span
-                        className={`w-1.5 h-1.5 rounded-full ${
-                          isHealthy ? "animate-dot-pulse" : ""
-                        }`}
-                        style={{
-                          backgroundColor: isHealthy
-                            ? "var(--success)"
-                            : "var(--severity-critical)",
-                        }}
-                      />
-                      {key}
-                    </div>
-                  )
-                }
-              )}
+              {Object.values(health.components).map((component: any) => {
+                const palette =
+                  component.status === "up"
+                    ? { bg: "var(--success-bg)", fg: "var(--success)" }
+                    : component.status === "degraded"
+                      ? { bg: "var(--severity-medium-bg)", fg: "var(--severity-medium)" }
+                      : { bg: "var(--severity-critical-bg)", fg: "var(--severity-critical)" }
+                return (
+                  <div
+                    key={component.name}
+                    title={`${component.detail} (${component.latency_ms} ms)`}
+                    className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium"
+                    style={{ backgroundColor: palette.bg, color: palette.fg }}
+                  >
+                    <span
+                      className="w-1.5 h-1.5 rounded-full"
+                      style={{ backgroundColor: palette.fg }}
+                    />
+                    {component.name}: {component.status}
+                  </div>
+                )
+              })}
             </div>
           </div>
         )}

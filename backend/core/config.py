@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     QDRANT_COLLECTION: str = "investigation_memory"
     OLLAMA_BASE_URL: str = "http://host.docker.internal:11434"
     OLLAMA_MODEL: str = "llama3.1"
+    MINIO_URL: str = "http://minio:9000"
+    HEALTH_PROBE_TIMEOUT_SECONDS: float = 3.0
     
     # JWT Authentication & RBAC (Human User Access)
     JWT_SECRET_KEY: str = DEV_JWT_PLACEHOLDER

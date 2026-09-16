@@ -26,12 +26,6 @@ class ThreatIntelAgent(BaseAgent):
                 "text": "Reviewing evidence and timeline to identify adversary techniques."
             })
             
-            # Tool call: memory search using authoritative memory service
-            await self.emit_step(db, execution, "tool_call_started", {
-                "text": "Searching Qdrant for similar historical patterns using hybrid search.",
-                "tool": "memory_search"
-            })
-            
             ips, domains, hashes = set(), set(), set()
             for ev in evidence:
                 if ev.evidence_type == 'ip': ips.add(ev.artifact)
@@ -51,13 +45,26 @@ class ThreatIntelAgent(BaseAgent):
             )
             
             summary_str = f"{case.title} {case.description or ''}"
-            await memory_service.initialize()
-            similar_cases = await memory_service.find_similar_cases(db, fingerprint, summary_str, limit=3)
-            
-            await self.emit_step(db, execution, "tool_call_complete", {
-                "text": f"Found {len(similar_cases)} verified historical cases in memory.",
-                "tool": "memory_search"
-            })
+
+            async def _memory_search():
+                await memory_service.initialize()
+                return await memory_service.find_similar_cases(db, fingerprint, summary_str, limit=3)
+
+            similar_cases = await self.run_tool(
+                db, execution, "memory_search",
+                tool_input={
+                    "collection": memory_service.vector_repo.collection_name,
+                    "limit": 3,
+                    "mitre_technique_count": len(mitre_techs),
+                    "ioc_count": len(ips) + len(domains) + len(hashes),
+                },
+                operation=_memory_search,
+                summarize_output=lambda results: {
+                    "result_count": len(results),
+                    "investigation_ids": [r.investigation_id for r in results],
+                    "top_similarity": round(results[0].similarity_score, 4) if results else None,
+                },
+            )
             
             raw_evidence = [{"artifact": e.artifact, "type": e.evidence_type, "reason": e.reason} for e in evidence]
             evidence_block = sanitize_evidence(raw_evidence)
@@ -76,7 +83,7 @@ class ThreatIntelAgent(BaseAgent):
             task_desc = f"Case: {case.title}\nDescription: {case.description or ''}\nHistorical Matches: {json.dumps(similar_summaries)}"
             format_desc = """Return a JSON object with:
 "mitre_mapping": A list of objects, each with:
-  - "technique_id": The standard MITRE Technique ID (e.g. "T1059", "T1110", "T1021", "T1068")
+  - "technique_id": The most specific standard MITRE Technique or Sub-technique ID supported by the evidence (e.g. "T1059.001", "T1110", "T1021", "T1068")
   - "technique_name": Standard MITRE Technique name
   - "tactic": Standard MITRE Tactic
   - "reason": Factual rationale from evidence
@@ -97,7 +104,8 @@ Return ONLY valid JSON."""
             
             response_text = await self.call_llm_with_timeout(
                 llm_service.generate(full_prompt, "", json_format=True),
-                timeout_seconds=120
+                timeout_seconds=120,
+                execution=execution
             )
             
             try:
@@ -114,13 +122,25 @@ Return ONLY valid JSON."""
             validated_mappings = []
             for mapping in result.get("mitre_mapping", []):
                 t_id = mapping.get("technique_id")
-                valid_info = mitre_kb.validate(t_id) if t_id else None
+                reason = mapping.get("reason", "Mapped by Threat Intel AI")
+                valid_info = mitre_kb.validate(t_id)
+                if not valid_info:
+                    # A well-formed sub-technique missing from the local knowledge base is recorded
+                    # at its parent technique, and the substitution is stated in the stored reason.
+                    normalized = mitre_kb.normalize_id(t_id)
+                    parent = mitre_kb.parent_id(normalized) if normalized else None
+                    valid_info = mitre_kb.validate(parent) if parent else None
+                    if valid_info:
+                        reason = (
+                            f"{reason} (proposed sub-technique {normalized} is not in the local ATT&CK "
+                            f"knowledge base; recorded at parent technique {parent})"
+                        )
                 if valid_info:
                     validated_mappings.append({
                         "technique_id": valid_info["technique_id"],
                         "technique_name": valid_info["name"],
                         "tactic": valid_info["tactic"],
-                        "reason": mapping.get("reason", "Mapped by Threat Intel AI")
+                        "reason": reason
                     })
                     
             result["mitre_mapping"] = validated_mappings

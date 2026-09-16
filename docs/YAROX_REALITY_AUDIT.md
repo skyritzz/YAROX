@@ -45,10 +45,10 @@ The "Restoration" column is updated as phases complete. `OPEN` = not yet address
 | ID | Component | Status | Evidence | File / Symbol | Why it matters | Proposed fix | Restoration |
 |---|---|---|---|---|---|---|---|
 | I-1 | Docker Compose stack | REAL | All 7 services start | `docker-compose.yml` | Dev platform | — | — |
-| I-2 | MinIO healthcheck | BROKEN | Health log: `exec: "curl": executable file not found` every 30s | `docker-compose.yml` minio.healthcheck | Permanent false "unhealthy"; masks real failures | Use `mc ready local` | OPEN |
+| I-2 | MinIO healthcheck | BROKEN | Health log: `exec: "curl": executable file not found` every 30s | `docker-compose.yml` minio.healthcheck | Permanent false "unhealthy"; masks real failures | Use `mc ready local` | **FIXED (Phase 2)** — `mc ready local`; container reports healthy |
 | I-3 | MinIO usage | MISSING | No code imports a MinIO/S3 client; not in `requirements.txt` | — | Spec claims artifact storage | Either implement artifact store or mark not implemented | OPEN |
 | I-4 | Celery worker | PARTIAL | Only `tasks.index_resolved_investigation_task` registered | `workers/celery_app.py` | Investigations run in API process | Phase 7 | OPEN |
-| I-5 | Celery worker env | PARTIAL | Worker lacks `OLLAMA_BASE_URL`, `JWT_SECRET_KEY` env; `depends_on` not health-gated | `docker-compose.yml` celery_worker | Worker LLM calls use defaults; startup races | Share env block; gate on health | OPEN |
+| I-5 | Celery worker env | PARTIAL | Worker lacks `OLLAMA_BASE_URL`, `JWT_SECRET_KEY` env; `depends_on` not health-gated | `docker-compose.yml` celery_worker | Worker LLM calls use defaults; startup races | Share env block; gate on health | PARTIAL (Phase 2) — worker now receives `OLLAMA_BASE_URL`/`OLLAMA_MODEL`; health-gated `depends_on` OPEN |
 | I-6 | Python version | REAL (doc mismatch) | Container is 3.12; CLAUDE.md says 3.11 | `backend/Dockerfile` | Docs untruthful | Fix docs | OPEN |
 | I-7 | Frontend version | REAL (doc mismatch) | `next@16.2.10`, docs say Next 15 | `frontend/package.json` | Docs untruthful | Fix docs | OPEN |
 | I-8 | Stray files | — | `backend/yarox.db` (0 bytes), `test_ws.py` (unauthenticated WS script, will be rejected), 260MB of video in `assets/`,`media/` untracked | repo root | Repo hygiene | Keep media out of git; move/delete stray scripts with owner approval | OPEN |
@@ -57,7 +57,7 @@ The "Restoration" column is updated as phases complete. `OPEN` = not yet address
 
 | ID | Component | Status | Evidence | File / Symbol | Why it matters | Proposed fix | Restoration |
 |---|---|---|---|---|---|---|---|
-| H-1 | `/health` | FAKE | Returns literal `"Healthy"` strings, no probes | `api/main.py` `health_check` | Operators cannot detect outages; frontend Infrastructure panel is fiction | Probe Postgres, Redis, Qdrant, MinIO, Ollama with timeouts; component status + overall | OPEN |
+| H-1 | `/health` | FAKE | Returns literal `"Healthy"` strings, no probes | `api/main.py` `health_check` | Operators cannot detect outages; frontend Infrastructure panel is fiction | Probe Postgres, Redis, Qdrant, MinIO, Ollama with timeouts; component status + overall | **FIXED (Phase 2)** — `core/health.py` live probes; 503 when required component down |
 | A-1 | Route prefix | REAL (doc mismatch) | Routes are `/events/ingest`, `/investigations`, no `/api/v1` | `api/main.py` | Docs untruthful | Fix docs (prefix change is a breaking change; defer) | OPEN |
 | A-2 | `POST /investigations/{id}/analyze` | BROKEN (unsafe) | Passes request-scoped `db` into `background_tasks.add_task(orchestrator.run_investigation, db, …)` | `api/investigations.py` `analyze_investigation` | Session lifetime owned by request; unsafe across tasks | Background task owns its own session; later Celery | OPEN |
 | A-3 | `PATCH /investigations/{id}/status` | BROKEN | Accepts any enum value from any state, incl. `ANALYZING`, `WAITING_FOR_REVIEW` | `api/investigations.py` `update_investigation_status` | Analysts can fake analysis state; bypass review gate | Explicit transition table; 409 on invalid | OPEN |
@@ -73,7 +73,7 @@ The "Restoration" column is updated as phases complete. `OPEN` = not yet address
 | ID | Component | Status | Evidence | File / Symbol | Why it matters | Proposed fix | Restoration |
 |---|---|---|---|---|---|---|---|
 | E-1 | Event bus | PARTIAL | `InMemoryEventBus` over `asyncio.Queue`; subscriber errors `print`ed and dropped | `core/events.py` | Lost on restart; single process only | Phase 10: Redis Streams | OPEN |
-| E-2 | Event integrity hash | MISSING | No hash column on `events`; no SHA-256 over payload anywhere | `models/event.py` | Chain-of-custody claim is false | `payload_sha256` column + canonical JSON hashing + migration | OPEN |
+| E-2 | Event integrity hash | MISSING | No hash column on `events`; no SHA-256 over payload anywhere | `models/event.py` | Chain-of-custody claim is false | `payload_sha256` column + canonical JSON hashing + migration | **FIXED (Phase 2)** — `events.payload_sha256`, `core/integrity.py`, `GET /events/{id}/integrity`; legacy rows NULL |
 | E-3 | Canonical event model | PARTIAL | `GenericJSONParser` returns ORM dict; `CanonicalEventType` taxonomy exists; no `CanonicalSecurityEvent` Pydantic model | `plugins/parsers/generic.py`, `core/taxonomy.py` | Connectors cannot target a stable contract | Phase 11 | OPEN |
 | E-4 | Connectors (Sysmon, Suricata, Splunk HEC) | MISSING | `plugins/{agents,providers,replay,tools}` empty | `backend/plugins/` | Spec claims connector ecosystem | Phase 11 | OPEN |
 | D-1 | Detection rules (4) | PARTIAL | Rules match; `DetectionEngine.process_event` returns on **first** matching rule; `SuspiciousProcessExecution` matches any `cmd.exe`/`powershell` command line | `detection/engine.py`, `detection/rules.py` | Multi-rule events lose detections; noisy | Evaluate all rules; tighten indicators | OPEN |
@@ -87,19 +87,19 @@ The "Restoration" column is updated as phases complete. `OPEN` = not yet address
 
 | ID | Component | Status | Evidence | File / Symbol | Why it matters | Proposed fix | Restoration |
 |---|---|---|---|---|---|---|---|
-| L-1 | LLM service config | FAKE (config) | `LLMService(model="llama3.1", base_url="http://host.docker.internal:11434")` constructor defaults; `settings.OLLAMA_MODEL/OLLAMA_BASE_URL` never read | `services/llm_service.py` | Configuration silently ignored | Provider built from settings | OPEN |
+| L-1 | LLM service config | FAKE (config) | `LLMService(model="llama3.1", base_url="http://host.docker.internal:11434")` constructor defaults; `settings.OLLAMA_MODEL/OLLAMA_BASE_URL` never read | `services/llm_service.py` | Configuration silently ignored | Provider built from settings | **FIXED (Phase 2)** — `LLMService` built from `settings.OLLAMA_MODEL/OLLAMA_BASE_URL`; provider abstraction remains Phase 8 |
 | L-2 | LLM failure handling | PARTIAL | Any exception → `print` + return `""`; no retry/backoff; no schema validation; agents `json.loads` raw text | `services/llm_service.py` `generate` | Transient failures become degraded agents | Phase 8 | OPEN |
 | L-3 | Agent pipeline | REAL | Live replay: Memory → Triage/Timeline/ThreatIntel (concurrent) → SOC Lead completed with real LLM output | `agents/orchestrator.py` | Core value | — | — |
 | L-4 | Agent execution confidence | FAKE | Hardcoded per agent: Timeline 0.9, ThreatIntel 0.85, SOC Lead 0.95, Memory 1.0 | `agents/*.py` `finish_execution(confidence=…)` | UI displays invented per-agent confidence | Derive or null | OPEN |
 | L-5 | Degraded fallback content | PARTIAL | SOC Lead fallback emits 3 generic recommendations as report content; marked `degraded` in execution status only | `agents/report.py` | Fallback text can be mistaken for analysis | Typed degraded result, no invented recommendations | OPEN |
 | L-6 | Triage guardrail | REAL | Prevents `LOW` when rule severity HIGH/CRITICAL (floors to MEDIUM) | `agents/triage.py` | Prompt-injection defense | Floor should be rule severity, not MEDIUM | OPEN |
 | L-7 | Prompt sandboxing | REAL | `<untrusted_security_evidence>` tags + escape (spec says `<EVIDENCE_BOUNDARY>`) | `core/utils.py` | — | Fix docs | — |
-| T-1 | Tool calls | FAKE | Only "tool" is `memory_search`; `emit_step("tool_call_complete")` creates `AgentToolCall(duration_ms=content.get("duration_ms", 850.0))`; no duration ever supplied → 67/67 rows = 850 | `agents/base.py` `emit_step`, `agents/threat_intel.py` | Fabricated performance data in UI | Measured tool runner | OPEN |
-| T-2 | Execution metrics | FAKE (by omission) | `llm_execution_time_ms`, `tool_execution_time_ms`, `confidence_explanation` never written; UI renders `null/1000` as `0.00s` | `models/investigation.py` `AgentExecution`; `InvestigationExplorer.tsx` | UI shows 0.00s as if measured | Measure or display "Not available" | OPEN |
+| T-1 | Tool calls | FAKE | Only "tool" is `memory_search`; `emit_step("tool_call_complete")` creates `AgentToolCall(duration_ms=content.get("duration_ms", 850.0))`; no duration ever supplied → 67/67 rows = 850 | `agents/base.py` `emit_step`, `agents/threat_intel.py` | Fabricated performance data in UI | Measured tool runner | **FIXED (Phase 2)** — `BaseAgent.run_tool` measures `perf_counter` duration, start/end, status, error; `emit_step` no longer fabricates tool calls |
+| T-2 | Execution metrics | FAKE (by omission) | `llm_execution_time_ms`, `tool_execution_time_ms`, `confidence_explanation` never written; UI renders `null/1000` as `0.00s` | `models/investigation.py` `AgentExecution`; `InvestigationExplorer.tsx` | UI shows 0.00s as if measured | Measure or display "Not available" | PARTIAL (Phase 2) — `llm_execution_time_ms` and `tool_execution_time_ms` measured; `confidence_explanation` still never written (Phase 9) |
 | V-1 | `evidence_ids` | MISSING | `emit_step(evidence_ids=None)` everywhere; not stored in `AgentReasoningStep`; WS replay hardcodes `[]` | `agents/base.py`, `websocket/investigation_ws.py` | No finding is traceable to evidence | Finding contract with validated evidence IDs | OPEN |
 | V-2 | `EvidenceItem.related_agent` | MISSING | Never set → Explorer "Evidence" tab always empty | `api/investigations.py` `get_investigation_execution` | Empty UI tab | Use finding→evidence links | OPEN |
 | R-1 | Report persistence | MISSING | SOC Lead JSON only lives inside `agent_reasoning_steps.content`; UI scrapes `decision_made` step; PDF uses `case.description` | `agents/report.py`, `app/reports/page.tsx` | Two sources of truth that disagree | `investigation_reports` table; UI+PDF read it | OPEN |
-| M-1 | MITRE validation | BROKEN | `validate()` strips sub-technique (`T1059.001`→`T1059`); KB has ~12 entries | `security/mitre/knowledge_base.py` | Sub-techniques lost | Exact-ID lookup, parent fallback for name only | OPEN |
+| M-1 | MITRE validation | BROKEN | `validate()` strips sub-technique (`T1059.001`→`T1059`); KB has ~12 entries | `security/mitre/knowledge_base.py` | Sub-techniques lost | Exact-ID lookup, parent fallback for name only | **FIXED (Phase 2)** — exact-ID validation; KB expanded to 31 entries; unknown sub-techniques recorded at parent with explicit reason |
 | S-1 | Confidence score | FAKE | `ConfidenceEngine.calculate_score(0.8, 0.7, p_score, 0.6)` — 3 of 4 inputs constants; 68/81 cases = 0.75 | `agents/orchestrator.py`, `scoring/confidence.py` | Headline number is fiction | Phase 9 derived formula | OPEN |
 
 ## 6. Memory
@@ -131,7 +131,7 @@ The "Restoration" column is updated as phases complete. `OPEN` = not yet address
 | X-3 | Mock-heavy tests | PARTIAL | Agent/evaluation tests patch `llm_service.generate`, use `AsyncMock` sessions | `evaluation/agent_eval.py`, several tests | Prove logic, not integration | Keep as unit tests; add real integration tests | OPEN |
 | X-4 | Blocking sleep in async test | PARTIAL | `time.sleep(2)` inside async test | `tests/test_memory_pipeline.py` | Blocks loop | Replaced with `asyncio.sleep` + in-process test worker | **FIXED (Phase 1)** |
 | X-5 | Alembic migrations | BROKEN | `alembic upgrade head` on an empty database fails: base revision `f070db4817a2` is empty (`pass`), `8532d6f9c999` is empty, `cba64ddf4a02` alters non-existent `investigation_cases`, `24d74fa147f3` reads legacy `agent_actions`. Real schema only exists because `api/main.py` runs `Base.metadata.create_all` at startup | `alembic/versions/*` | Fresh deployments cannot be built from migrations; schema changes are unmanaged | Squash into a baseline under ID `7a3e8b1d9c4f` (**blocked: requires owner approval to delete historical migration files**). Interim: fresh DBs built with `create_all` + `alembic stamp head`; new migrations are additive and tested from a frozen baseline | PARTIAL (interim) |
-| X-6 | Model / schema drift | BROKEN | Migrated dev schema has `ON DELETE SET NULL` on `investigation_cases.assigned_to_user_id`/`resolved_by_user_id`; models had no `ondelete`. Dev DB is also **missing** `ix_investigation_cases_assigned_to_user_id` and `ix_investigation_cases_resolved_by_user_id` that the model declares | `models/investigation.py` | Tests built from models diverge from production schema | Models aligned (`ondelete="SET NULL"`); missing indexes to be added by next migration | PARTIAL (FK fixed; indexes OPEN) |
+| X-6 | Model / schema drift | BROKEN | Migrated dev schema has `ON DELETE SET NULL` on `investigation_cases.assigned_to_user_id`/`resolved_by_user_id`; models had no `ondelete`. Dev DB is also **missing** `ix_investigation_cases_assigned_to_user_id` and `ix_investigation_cases_resolved_by_user_id` that the model declares | `models/investigation.py` | Tests built from models diverge from production schema | Models aligned (`ondelete="SET NULL"`); missing indexes to be added by next migration | **FIXED (Phase 2)** — FK aligned (Phase 1); migration `b7c1e2d3f4a5` creates missing indexes (verified in dev `pg_indexes`) |
 | X-7 | Historical dev-data contamination | BROKEN | Dev DB contains 27 users (3 seeded) and test-titled cases/Qdrant points from pre-isolation test runs | dev Postgres/Qdrant | Dev data is not trustworthy | Owner decision on cleanup; orphan vectors handled in Phase 4 | OPEN |
 
 ## 9. Frontend
@@ -146,12 +146,13 @@ The "Restoration" column is updated as phases complete. `OPEN` = not yet address
 | F-5 | Dashboard agent cards | FAKE | `demoTasks` strings ("Reconstructing login sequence for jdoe", "Case #4A2F"); agents shown "active" whenever replay is playing; confidence fallback `87` | `app/page.tsx` `AGENTS`, `agentActive` | Agent activity invented | Derive from running executions | OPEN |
 | F-6 | "N agents thinking" | FAKE | `activeAgentCount = isRunning ? 3 : 0` | `app/page.tsx` | Invented | Count running executions | OPEN |
 | F-7 | "Live Gateway: Active" badge | FAKE | Static JSX | `app/page.tsx` | Invented status | Remove or use health | OPEN |
-| F-8 | Infrastructure panel | FAKE (via H-1) | Reads hardcoded health | `app/page.tsx` | — | Real health | OPEN |
+| F-8 | Infrastructure panel | FAKE (via H-1) | Reads hardcoded health | `app/page.tsx` | — | Real health | **FIXED (Phase 2)** — dashboard renders `components` with live status/detail |
 | F-9 | Architecture page | FAKE | Static `avgDuration: "~3s"`, `lastRun: "Active"` | `app/architecture/page.tsx` | Invented runtime metrics | Mark as static diagram, remove metrics | OPEN |
 | F-10 | Explorer metrics | FAKE (by omission) | Renders `null` LLM/tool timings as `0.00s` | `components/InvestigationExplorer.tsx` | — | "Not available" | OPEN |
 | F-11 | Investigation summary/timeline | PARTIAL | Scrapes reasoning steps (first `completed` execution; with duplicate runs picks arbitrary one) | `app/investigations/[id]/page.tsx` | Nondeterministic display | Read persisted report | OPEN |
 | F-12 | Timeline "critical" highlighting | PARTIAL | Keyword heuristic on action text | `app/investigations/[id]/page.tsx` | Presentation heuristic, not evidence | Label as heuristic or remove | OPEN |
 | F-13 | Events, evidence, investigations list pages | REAL | Read from API | `app/events`, `app/evidence`, `app/investigations` | — | — | — |
+| F-14 | TypeScript errors | BROKEN | `tsc --noEmit`: `investigations/[id]/page.tsx` uses non-existent `evt.type`/`evt.content`; `lib/api.ts` assigns `string \| null` to `string` | frontend | Type safety hides real contract mismatches | Fix with Phase 14 contract cleanup | OPEN |
 
 ## 10. Repository Hygiene
 
@@ -193,3 +194,36 @@ Entries are appended per phase with evidence.
 - X-6 dev DB missing two indexes.
 - X-7 dev data contaminated by historical test runs.
 - Many tests remain mock-based unit tests (X-3); real integration tests arrive with later phases.
+
+### Phase 2 — Remove fake system behavior (2026-09-17)
+
+**Scope decision.** Per the mandated development order, Phase 2 covers health, tool/LLM timing, event integrity, MITRE identifiers and configuration truthfulness. Confidence scoring (S-1, L-4) is Phase 9; reports/evidence (R-1, V-1) are Phase 3; frontend fakes other than the health panel are Phase 14.
+
+**Changed**
+- `core/health.py` + `/health`: concurrent live probes with per-probe timeout — Postgres (`SELECT 1` + Alembic revision vs script head), Redis `PING`, Qdrant collection existence/point count, in-process event bus worker state, Ollama `/api/tags` + configured model installed, Celery `control.ping`, MinIO `/minio/health/live`. Required: postgres, redis, qdrant, event_bus. Overall `down` → HTTP 503; `degraded` → 200.
+- `docker-compose.yml`: MinIO healthcheck `mc ready local`; `OLLAMA_MODEL` to backend; `OLLAMA_BASE_URL`/`OLLAMA_MODEL` to worker.
+- `services/llm_service.py`: model/base URL from settings.
+- `agents/base.py`: `run_tool()` measures real duration and records `started_at`, `completed_at`, `status`, `error_message`, input/output metadata; accumulates `tool_execution_time_ms`. `call_llm_with_timeout(execution=…)` accumulates measured `llm_execution_time_ms`. The fabricated `AgentToolCall(duration_ms=850)` path was deleted.
+- `agents/memory.py`, `agents/threat_intel.py`: memory search runs through `run_tool` (Memory Agent's search was previously unrecorded).
+- `core/integrity.py`, `models/event.py`, `consumers/db_writer.py`, `api/events.py`: SHA-256 event hashing (canonicalization documented in module docstring), hash at first storage, verification endpoint.
+- `security/mitre/*`, `agents/threat_intel.py`: exact technique/sub-technique validation; prompt asks for most specific ID.
+- Migration `b7c1e2d3f4a5` (events hash, tool call timing columns, missing dev indexes); `alembic/env.py` accepts explicit URL; `tests/support/baseline_schema.py` frozen schema at `7a3e8b1d9c4f`.
+- Frontend dashboard infrastructure panel reads live `components`.
+
+**Tests**
+- New: `test_health.py` (5), `test_tool_call_measurement.py` (3), `test_event_integrity.py` (12), `test_mitre_techniques.py` (12 incl. parametrized), `test_migrations.py` (1).
+- `docker compose exec backend pytest -v tests/` → **107 passed**.
+- Migration test negative control (baseline without upgrade) reports 5 schema diffs → test is meaningful.
+
+**Verified on the running system**
+- `alembic upgrade head` on dev DB: `7a3e8b1d9c4f -> b7c1e2d3f4a5`; `ix_investigation_cases_assigned_to_user_id` / `_resolved_by_user_id` now present.
+- `docker compose ps`: `yarox-minio … (healthy)` (was unhealthy since creation).
+- `GET /health` (dev): `ok`; postgres at head `b7c1e2d3f4a5`, qdrant "17 points", llm "model 'llama3.1' installed", celery "1 worker(s)", minio live.
+- MinIO stopped → `/health` overall `degraded`, `minio: down (ConnectError …)`; restarted.
+- Live replay `credential_theft` @100x (18:51): `agent_tool_calls` durations 34.9 / 63.4 / 24.4 / 27.6 ms with measured timestamps and output metadata (previously all 850); `llm_execution_time_ms` 8.6–51.1 s per agent; 5 new events hashed, 205 legacy events NULL; `GET /events/19a94239…/integrity` → `verified: true`; legacy event → `verified: null`.
+- Backend logs: no errors after restart.
+
+**Remaining / newly discovered**
+- Duplicate concurrent investigation reproduced again on this replay (C-2, Phase 5).
+- Frontend TypeScript errors (F-14). Dashboard panel change is type-checked and served (HTTP 200) but not visually verified in a browser.
+- `confidence_explanation` never populated (T-2 partial, Phase 9).

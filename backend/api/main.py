@@ -1,5 +1,8 @@
+from datetime import datetime, timezone
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from core.health import check_health
 from core.config import settings, validate_production_settings
 from core.events import event_bus
 from consumers.db_writer import register_consumers
@@ -73,21 +76,17 @@ app.include_router(memory_router, prefix="/memory", tags=["Memory"])
 
 @app.get("/health", tags=["System"])
 async def health_check():
-    return {
-        "status": "ok",
+    """
+    Live component health. Every status is produced by a probe at request time
+    (see core/health.py). Returns HTTP 503 when a required component is down.
+    """
+    report = await check_health()
+    body = {
+        "status": report["status"],
         "project": settings.PROJECT_NAME,
         "version": settings.VERSION,
         "environment": settings.ENVIRONMENT,
-        "infrastructure": {
-            "Backend": "Healthy",
-            "PostgreSQL": "Healthy",
-            "Redis": "Healthy",
-            "MinIO": "Healthy",
-            "Qdrant": "Healthy",
-            "Event Bus": "Active",
-            "Replay Engine": "Active",
-            "Live Ingestion Gateway": "Active",
-            "Authentication": "Enabled",
-            "CORS": "Restricted"
-        }
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "components": report["components"],
     }
+    return JSONResponse(status_code=503 if report["status"] == "down" else 200, content=body)

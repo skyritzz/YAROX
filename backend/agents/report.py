@@ -56,7 +56,8 @@ Return ONLY valid JSON."""
             
             response_text = await self.call_llm_with_timeout(
                 llm_service.generate(full_prompt, "", json_format=True),
-                timeout_seconds=120
+                timeout_seconds=120,
+                execution=execution
             )
             
             try:

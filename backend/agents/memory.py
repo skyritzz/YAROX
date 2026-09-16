@@ -46,8 +46,26 @@ class MemoryAgent(BaseAgent):
             })
 
             current_summary = f"{case.title} {case.description or ''}"
-            await memory_service.initialize()
-            similar_cases = await memory_service.find_similar_cases(db, fingerprint, current_summary)
+
+            async def _memory_search():
+                await memory_service.initialize()
+                return await memory_service.find_similar_cases(db, fingerprint, current_summary)
+
+            similar_cases = await self.run_tool(
+                db, execution, "memory_search",
+                tool_input={
+                    "collection": memory_service.vector_repo.collection_name,
+                    "limit": 5,
+                    "mitre_technique_count": len(mitre_techs),
+                    "ioc_count": len(ips) + len(domains) + len(hashes),
+                },
+                operation=_memory_search,
+                summarize_output=lambda results: {
+                    "result_count": len(results),
+                    "investigation_ids": [r.investigation_id for r in results],
+                    "top_similarity": round(results[0].similarity_score, 4) if results else None,
+                },
+            )
 
             # Priority 10: Truthful Memory Results (No fabricated historical matches)
             if not similar_cases:

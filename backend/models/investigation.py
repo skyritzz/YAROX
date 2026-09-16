@@ -119,8 +119,11 @@ class AgentToolCall(Base):
     tool_name = Column(String, nullable=False)
     input = Column(JSONB, nullable=True)
     output = Column(JSONB, nullable=True)
-    duration_ms = Column(Float, nullable=True)
-    status = Column(String, nullable=True) # Running, Completed, Failed, Timeout, Cancelled, Cached
+    duration_ms = Column(Float, nullable=True)  # measured wall-clock duration
+    status = Column(String, nullable=True) # Completed, Failed
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    error_message = Column(Text, nullable=True)
     
     execution = relationship("AgentExecution", back_populates="tool_calls")
 

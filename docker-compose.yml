@@ -39,7 +39,8 @@ services:
     volumes:
       - minio_data:/data
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      # The minio image has no curl; `mc ready local` is MinIO's supported readiness check
+      test: ["CMD", "mc", "ready", "local"]
       interval: 30s
       timeout: 20s
       retries: 3
@@ -74,6 +75,7 @@ services:
       - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
       - QDRANT_URL=${QDRANT_URL:-http://qdrant:6333}
       - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.1}
       - JWT_SECRET_KEY=${JWT_SECRET_KEY:-yarox-dev-insecure-secret-key-change-in-production-2026-phase4a}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:3002,http://127.0.0.1:3000,http://127.0.0.1:3002}
 
@@ -92,6 +94,8 @@ services:
       - DATABASE_URL=${DATABASE_URL:-postgresql+asyncpg://yarox:yaroxpassword@postgres:5432/yarox}
       - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
       - QDRANT_URL=${QDRANT_URL:-http://qdrant:6333}
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.1}
       - CELERY_BROKER_URL=${REDIS_URL:-redis://redis:6379/0}
       - CELERY_RESULT_BACKEND=${REDIS_URL:-redis://redis:6379/0}
 

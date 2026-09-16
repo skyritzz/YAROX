@@ -19,8 +19,9 @@ from models import Base
 # access to the values within the .ini file in use.
 config = context.config
 
-# Overwrite the sqlalchemy.url using our pydantic settings
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+# Overwrite the sqlalchemy.url using our pydantic settings, unless a caller (e.g. the
+# migration test) explicitly supplies a target URL through config attributes.
+config.set_main_option("sqlalchemy.url", config.attributes.get("database_url") or settings.DATABASE_URL)
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
