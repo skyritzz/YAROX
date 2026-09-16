@@ -505,17 +505,16 @@ async def test_mixed_timeline_events_full_pipeline():
 @pytest.mark.asyncio
 async def test_celery_broker_dispatch_memory_indexing():
     """
-    Condition 3: Verifies the real API → Redis → Celery worker → memory indexing path.
+    Condition 3: Verifies the Redis broker → Celery worker → memory indexing path.
 
-    This test sends a task via .delay() through the real Redis broker to the real
-    Celery worker, then polls PostgreSQL for the InvestigationMemory record that
-    the worker should create.
-
-    ENVIRONMENT REQUIREMENT: yarox-redis and yarox-celery-worker must be running.
-    The Celery worker must have the patched knowledge_builder with selectinload.
+    The task is sent via .delay() through a real Redis broker (isolated test DB 15)
+    to a real Celery worker running in-process against the test database and test
+    Qdrant collection, then PostgreSQL is polled for the InvestigationMemory record
+    that the worker should create. The development worker is never involved.
     """
     from workers.tasks.memory_tasks import index_resolved_investigation_task
-    import time
+    from tests.support.celery import running_test_worker
+    import asyncio
 
     case_id = uuid.uuid4()
 
@@ -549,28 +548,41 @@ async def test_celery_broker_dispatch_memory_indexing():
         session.add(ev)
         await session.commit()
 
-    # 2. Dispatch task through Redis broker to Celery worker
-    result = index_resolved_investigation_task.delay(str(case_id))
+    mock_llm_response = json.dumps({
+        "summary": "Celery Broker Integration Test summary",
+        "executive_summary": "Brute force source 10.0.0.99 recorded.",
+        "important_events": ["Brute force attempts from 10.0.0.99"],
+    })
 
-    # 3. Wait for Celery worker to process (poll with timeout)
+    # 2. Dispatch task through the isolated Redis broker to an in-process worker
     max_wait_seconds = 120
     poll_interval = 2
     elapsed = 0
     memory_created = False
 
-    while elapsed < max_wait_seconds:
-        time.sleep(poll_interval)
-        elapsed += poll_interval
-        async with AsyncSessionLocal() as session:
-            mem_res = await session.execute(
-                select(InvestigationMemory).where(
-                    InvestigationMemory.investigation_id == case_id
-                )
-            )
-            mem = mem_res.scalar_one_or_none()
-            if mem is not None:
-                memory_created = True
-                break
+    global_vector_repo_before = memory_service.vector_repo
+
+    with patch("services.llm_service.llm_service.generate", new_callable=AsyncMock, return_value=mock_llm_response):
+        with running_test_worker():
+            result = index_resolved_investigation_task.delay(str(case_id))
+
+            # 3. Wait for Celery worker to process (poll with timeout)
+            while elapsed < max_wait_seconds:
+                await asyncio.sleep(poll_interval)
+                elapsed += poll_interval
+                async with AsyncSessionLocal() as session:
+                    mem_res = await session.execute(
+                        select(InvestigationMemory).where(
+                            InvestigationMemory.investigation_id == case_id
+                        )
+                    )
+                    mem = mem_res.scalar_one_or_none()
+                    if mem is not None:
+                        memory_created = True
+                        break
+
+    # The task must not replace the process-global Qdrant client (bound to another event loop)
+    assert memory_service.vector_repo is global_vector_repo_before
 
     # 4. Verify the memory record was created by the Celery worker
     assert memory_created, (

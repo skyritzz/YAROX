@@ -4,7 +4,7 @@ from core.config import settings
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from sqlalchemy.pool import NullPool
 from memory.knowledge_builder import knowledge_builder
-from memory.service import memory_service
+from memory.service import memory_service, InvestigationMemoryService
 from memory.vector_repository import QdrantRepository
 import traceback
 
@@ -16,17 +16,21 @@ def index_resolved_investigation_task(case_id: str):
         task_engine = create_async_engine(settings.DATABASE_URL, poolclass=NullPool, echo=False)
         TaskSessionLocal = async_sessionmaker(task_engine, class_=AsyncSession, expire_on_commit=False)
 
-        # Re-create the Qdrant async client for each task invocation to attach to the fresh event loop
-        memory_service.vector_repo = QdrantRepository(
-            url=memory_service.vector_repo.url,
-            collection_name=memory_service.vector_repo.collection_name
+        # Task-local Qdrant client bound to this asyncio.run event loop. The process-global
+        # memory_service must not be mutated: its client belongs to another event loop.
+        task_memory_service = InvestigationMemoryService(
+            QdrantRepository(
+                url=memory_service.vector_repo.url,
+                collection_name=memory_service.vector_repo.collection_name
+            ),
+            embedding_model=memory_service.embedding_model
         )
         try:
             async with TaskSessionLocal() as session:
                 print(f"Starting memory indexing for case {case_id}")
-                await memory_service.initialize()
+                await task_memory_service.initialize()
                 knowledge_obj, fingerprint = await knowledge_builder.build(session, case_id)
-                await memory_service.index_knowledge(session, knowledge_obj, fingerprint)
+                await task_memory_service.index_knowledge(session, knowledge_obj, fingerprint)
                 print(f"Successfully indexed case {case_id}")
         except Exception as e:
             print(f"Failed to index case {case_id}: {e}")

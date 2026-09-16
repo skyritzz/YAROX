@@ -3,15 +3,17 @@ from typing import List, Dict, Any, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from fastembed import TextEmbedding
+from core.config import settings
 from memory.vector_repository import IVectorRepository, QdrantRepository
 from models.investigation import InvestigationMemory
 from schemas.memory import InvestigationKnowledgeObject, InvestigationFingerprint, SimilarityResult
 import json
 
 class InvestigationMemoryService:
-    def __init__(self, vector_repo: IVectorRepository):
+    def __init__(self, vector_repo: IVectorRepository, embedding_model: TextEmbedding | None = None):
         self.vector_repo = vector_repo
-        self.embedding_model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
+        # The embedding model is loop-independent and expensive to load, so it can be shared
+        self.embedding_model = embedding_model or TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
 
     async def initialize(self):
         await self.vector_repo.initialize()
@@ -135,5 +137,7 @@ class InvestigationMemoryService:
         similarity_results.sort(key=lambda x: x.similarity_score, reverse=True)
         return similarity_results[:limit]
 
-# Singleton instance
-memory_service = InvestigationMemoryService(QdrantRepository())
+# Singleton instance (connection settings come from application configuration)
+memory_service = InvestigationMemoryService(
+    QdrantRepository(url=settings.QDRANT_URL, collection_name=settings.QDRANT_COLLECTION)
+)

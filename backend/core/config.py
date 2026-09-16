@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql+asyncpg://yarox:yaroxpassword@postgres:5432/yarox"
     REDIS_URL: str = "redis://redis:6379/0"
     QDRANT_URL: str = "http://qdrant:6333"
+    QDRANT_COLLECTION: str = "investigation_memory"
     OLLAMA_BASE_URL: str = "http://host.docker.internal:11434"
     OLLAMA_MODEL: str = "llama3.1"
     

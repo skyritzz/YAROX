@@ -29,7 +29,7 @@ The "Restoration" column is updated as phases complete. `OPEN` = not yet address
 | `docker compose exec backend pytest -v tests/` | **7 collection errors** (`ModuleNotFoundError: core/api/memory/...`) |
 | `docker compose exec backend python -m pytest tests/` | 71 passed, 15 warnings, 34s |
 | Postgres state before replay | 200 events, 81 cases (74 WAITING_FOR_REVIEW, 1 OPEN, 6 RESOLVED) |
-| Agent executions (historical) | 390 total; 370 completed, 19 degraded, 1 failed-less; degraded causes: 7 timeouts, 1 invalid JSON, 11 empty error |
+| Agent executions (historical) | 390 total; 370 completed, 19 degraded, 1 other; degraded causes: 7 timeouts, 1 invalid JSON, 11 empty error |
 | `investigation_memory` rows | **0** (despite 6 RESOLVED cases) |
 | Qdrant `investigation_memory` points | 17, **all created by test runs**, none correspond to a real case |
 | `agent_tool_calls.duration_ms` | 67/67 rows = **850** |
@@ -110,9 +110,10 @@ The "Restoration" column is updated as phases complete. `OPEN` = not yet address
 | MEM-2 | Indexing order | BROKEN | Qdrant upsert happens **before** Postgres insert; on FK failure the vector is orphaned | `memory/service.py` `index_knowledge` | Orphan vectors pollute retrieval | Postgres commit first, then Qdrant, mark indexed | OPEN |
 | MEM-3 | Indexing task failure semantics | BROKEN | `except Exception: print` → task reports SUCCESS; no retry | `workers/tasks/memory_tasks.py` | Failures invisible | Raise, `autoretry_for`, backoff | OPEN |
 | MEM-4 | Real memory content | BROKEN | 0 `investigation_memory` rows; 17 Qdrant points all from tests; 6 RESOLVED cases never indexed | DB/Qdrant | Memory Agent always returns "no matches" | Reindex resolved cases after fixes; purge orphans | OPEN |
-| MEM-5 | Qdrant URL | FAKE (config) | `memory_service = InvestigationMemoryService(QdrantRepository())` → hardcoded `http://qdrant:6333`; `settings.QDRANT_URL` ignored | `memory/service.py` | Config ignored | Use settings | OPEN |
+| MEM-5 | Qdrant URL | FAKE (config) | `memory_service = InvestigationMemoryService(QdrantRepository())` → hardcoded `http://qdrant:6333`; `settings.QDRANT_URL` ignored | `memory/service.py` | Config ignored | Use settings | **FIXED (Phase 1)** — `settings.QDRANT_URL`, new `settings.QDRANT_COLLECTION` |
 | MEM-6 | Self-match | PARTIAL | Memory Agent does not exclude the current case | `agents/memory.py` | Reopened resolved cases match themselves | Exclude own ID | OPEN |
 | MEM-7 | `InvestigationMemory.investigation_id` lookup | PARTIAL | `scalar_one_or_none()` on all versions → raises `MultipleResultsFound` on 3rd index | `memory/service.py` | Reindex breaks after 2 versions | Filter `is_latest` | OPEN |
+| MEM-8 | Global singleton mutation | BROKEN | `index_resolved_investigation_task` replaced `memory_service.vector_repo` with a client bound to the task's short-lived event loop; any later in-process memory call failed with `Event loop is closed` (reproduced: ThreatIntel agent degraded in test run after indexing task) | `workers/tasks/memory_tasks.py` | Silent degradation of memory-backed agents in any process that also runs the task | Task-local `InvestigationMemoryService` sharing the embedding model | **FIXED (Phase 1)** — regression assertion in `test_celery_broker_dispatch_memory_indexing` |
 
 ## 7. WebSocket / Realtime
 
@@ -125,12 +126,16 @@ The "Restoration" column is updated as phases complete. `OPEN` = not yet address
 
 | ID | Component | Status | Evidence | File / Symbol | Why it matters | Proposed fix | Restoration |
 |---|---|---|---|---|---|---|---|
-| X-1 | Documented pytest command | BROKEN | 7 `ModuleNotFoundError` at collection | no `pytest.ini`/`conftest.py` | CI/devs cannot run tests | `pytest.ini` with `pythonpath = .` | OPEN |
-| X-2 | Test isolation | BROKEN | Tests use `settings.DATABASE_URL` (dev DB); `test_celery_broker_dispatch_memory_indexing` sends real Celery task; `test_reopen_case_lifecycle` resolves without mocking `.delay` → worker FK failure; Qdrant test collections on dev Qdrant | `tests/test_memory_pipeline.py`, `tests/test_phase5_case_management.py` | Tests corrupt dev data | Test DB `yarox_test`, eager Celery, test Qdrant prefix, Redis DB 15, guard assertion | OPEN |
+| X-1 | Documented pytest command | BROKEN | 7 `ModuleNotFoundError` at collection | no `pytest.ini`/`conftest.py` | CI/devs cannot run tests | `pytest.ini` with `pythonpath = .` | **FIXED (Phase 1)** |
+| X-2 | Test isolation | BROKEN | Tests use `settings.DATABASE_URL` (dev DB); `test_celery_broker_dispatch_memory_indexing` sends real Celery task; `test_reopen_case_lifecycle` resolves without mocking `.delay` → worker FK failure; Qdrant test collections on dev Qdrant | `tests/test_memory_pipeline.py`, `tests/test_phase5_case_management.py` | Tests corrupt dev data | Test DB `yarox_test`, isolated Celery broker, test Qdrant prefix, Redis DB 15, guard assertion | **FIXED (Phase 1)** |
 | X-3 | Mock-heavy tests | PARTIAL | Agent/evaluation tests patch `llm_service.generate`, use `AsyncMock` sessions | `evaluation/agent_eval.py`, several tests | Prove logic, not integration | Keep as unit tests; add real integration tests | OPEN |
-| X-4 | Blocking sleep in async test | PARTIAL | `time.sleep(2)` inside async test | `tests/test_memory_pipeline.py` | Blocks loop | Remove with eager Celery | OPEN |
+| X-4 | Blocking sleep in async test | PARTIAL | `time.sleep(2)` inside async test | `tests/test_memory_pipeline.py` | Blocks loop | Replaced with `asyncio.sleep` + in-process test worker | **FIXED (Phase 1)** |
+| X-5 | Alembic migrations | BROKEN | `alembic upgrade head` on an empty database fails: base revision `f070db4817a2` is empty (`pass`), `8532d6f9c999` is empty, `cba64ddf4a02` alters non-existent `investigation_cases`, `24d74fa147f3` reads legacy `agent_actions`. Real schema only exists because `api/main.py` runs `Base.metadata.create_all` at startup | `alembic/versions/*` | Fresh deployments cannot be built from migrations; schema changes are unmanaged | Squash into a baseline under ID `7a3e8b1d9c4f` (**blocked: requires owner approval to delete historical migration files**). Interim: fresh DBs built with `create_all` + `alembic stamp head`; new migrations are additive and tested from a frozen baseline | PARTIAL (interim) |
+| X-6 | Model / schema drift | BROKEN | Migrated dev schema has `ON DELETE SET NULL` on `investigation_cases.assigned_to_user_id`/`resolved_by_user_id`; models had no `ondelete`. Dev DB is also **missing** `ix_investigation_cases_assigned_to_user_id` and `ix_investigation_cases_resolved_by_user_id` that the model declares | `models/investigation.py` | Tests built from models diverge from production schema | Models aligned (`ondelete="SET NULL"`); missing indexes to be added by next migration | PARTIAL (FK fixed; indexes OPEN) |
+| X-7 | Historical dev-data contamination | BROKEN | Dev DB contains 27 users (3 seeded) and test-titled cases/Qdrant points from pre-isolation test runs | dev Postgres/Qdrant | Dev data is not trustworthy | Owner decision on cleanup; orphan vectors handled in Phase 4 | OPEN |
 
 ## 9. Frontend
+
 
 | ID | Component | Status | Evidence | File / Symbol | Why it matters | Proposed fix | Restoration |
 |---|---|---|---|---|---|---|---|
@@ -152,10 +157,39 @@ The "Restoration" column is updated as phases complete. `OPEN` = not yet address
 
 | ID | Component | Status | Evidence | Why it matters | Proposed fix | Restoration |
 |---|---|---|---|---|---|---|
-| G-1 | Uncommitted work | PARTIAL | 30 modified files (+2784/-582), ~70 untracked incl. `core/auth.py`, `api/ingest.py`, `memory/*`, migrations, tests; HEAD commit `20cb693` imports untracked modules | Committed tree is not runnable; work at risk | Commit to restoration branch (media excluded) | OPEN |
+| G-1 | Uncommitted work | PARTIAL | 30 modified files (+2784/-582), ~70 untracked incl. `core/auth.py`, `api/ingest.py`, `memory/*`, migrations, tests; HEAD commit `20cb693` imports untracked modules | Committed tree is not runnable; work at risk | Commit to restoration branch (media excluded) | **FIXED (Phase 1)** — branch `restoration/truthful-yarox`, commit `e0ed88e` |
 
 ---
 
 ## Restoration Log
 
 Entries are appended per phase with evidence.
+
+### Phase 1 — Test isolation + safety (2026-09-17)
+
+**Changed**
+- Branch `restoration/truthful-yarox`; pre-restoration work preserved in commit `e0ed88e` (videos `assets/url-shortner.mp4`, `media/YAROX PH2 DEMO.mov` and stray `test_ws.py`/`backend/yarox.db` intentionally left untracked, not deleted).
+- `backend/pytest.ini`: `pythonpath = .`, `testpaths = tests`.
+- `backend/conftest.py`: overrides env before settings load → `DATABASE_URL=…/yarox_test`, `REDIS_URL`/Celery broker/result backend → Redis DB 15, `QDRANT_COLLECTION=test_investigation_memory`; aborts if DB name lacks `_test`, Redis DB ≠ 15, or collection lacks `test_`; recreates test schema (`create_all` + `alembic stamp head`); purges `test_*` Qdrant collections and flushes Redis DB 15 at start/end; session-scoped event loop (production parity: one loop per process).
+- `tests/support/celery.py`: in-process Celery worker bound to the isolated broker. Celery is **not** run eager: tasks call `asyncio.run`, which cannot run inside an async test's loop; the isolated broker plus explicit in-process worker exercises the real broker path instead.
+- `tests/test_test_isolation.py`: proves settings/engine/Celery/Qdrant point at test infrastructure and that a committed write is absent from the development database (read-only check).
+- `test_celery_broker_dispatch_memory_indexing` now uses the in-process test worker (previously dispatched to the development worker and wrote to development Postgres/Qdrant).
+- `core/config.py`: `QDRANT_COLLECTION`; `memory/service.py` uses `settings.QDRANT_URL`/`QDRANT_COLLECTION` (MEM-5).
+- `models/investigation.py`: FK `ondelete="SET NULL"` to match migrated schema (X-6).
+- `workers/tasks/memory_tasks.py`: task-local memory service; global singleton no longer mutated (MEM-8).
+
+**Tests run**
+- `docker compose exec backend pytest -v tests/` → **73 passed** (71 pre-existing + 2 isolation tests), run 3 times consecutively.
+- Guard: `TEST_DATABASE_URL=…/yarox pytest` → `Exit: Refusing to run tests against non-test database 'yarox'`.
+
+**Verified isolation (before vs after two full runs)**
+- Dev Postgres: cases 82, events 205, memory 0, users 27, audit 0, notes 0, executions 400 — identical.
+- Dev Qdrant `investigation_memory`: 17 points — identical; collections `['investigation_memory','investigations']` — identical.
+- Dev Celery worker `received` log count: 18 — identical (no test task reached it).
+- Schema diff dev vs test: identical tables/columns/types/FK rules; column order differs; dev missing 2 indexes (X-6).
+
+**Remaining / newly discovered**
+- X-5 migrations cannot build a fresh DB; squash needs owner approval (file deletion was blocked).
+- X-6 dev DB missing two indexes.
+- X-7 dev data contaminated by historical test runs.
+- Many tests remain mock-based unit tests (X-3); real integration tests arrive with later phases.
