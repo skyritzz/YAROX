@@ -5,6 +5,10 @@ import { api } from "@/lib/api"
 import { useParams, useRouter } from "next/navigation"
 import Link from "next/link"
 import { useEffect, useState, useRef } from "react"
+import { InvestigationProvider, useInvestigation } from "@/context/InvestigationContext"
+import { LiveInvestigationProvider, useLiveEvents } from "@/context/LiveInvestigationContext"
+import { InvestigationExplorer } from "@/components/InvestigationExplorer"
+import { MemoryInsights } from "@/components/investigation/MemoryInsights"
 import { motion, AnimatePresence } from "framer-motion"
 import {
   ShieldAlert,
@@ -43,19 +47,23 @@ const defaultAvatar = { icon: Shield, color: "var(--agent-triage)", bg: "var(--a
 
 export default function InvestigationDetail() {
   const { id } = useParams()
+  return (
+    <InvestigationProvider caseId={id as string}>
+      <LiveInvestigationProvider caseId={id as string}>
+        <InvestigationDetailContent />
+        <InvestigationExplorer />
+      </LiveInvestigationProvider>
+    </InvestigationProvider>
+  )
+}
+
+function InvestigationDetailContent() {
+  const { id } = useParams()
   const router = useRouter()
-  const [wsEvents, setWsEvents] = useState<any[]>([])
   const reasoningEndRef = useRef<HTMLDivElement>(null)
 
-  const { data: caseData, isLoading, refetch } = useQuery({
-    queryKey: ["investigation", id],
-    queryFn: async () => {
-      const { data } = await api.get(`/investigations/${id}`)
-      return data
-    },
-    refetchInterval: (query) =>
-      query.state.data?.status === "ANALYZING" ? 2000 : false,
-  })
+  const { caseData, isLoading, refetch, setSelectedExecutionId } = useInvestigation()
+  const wsEvents = useLiveEvents()
 
   // Fetch all investigations for the left queue
   const { data: allInvestigations } = useQuery({
@@ -70,24 +78,12 @@ export default function InvestigationDetail() {
     refetchInterval: 5000,
   })
 
-  useEffect(() => {
-    const ws = new WebSocket(`ws://localhost:8000/ws/investigations`)
-    ws.onmessage = (event) => {
-      const data = JSON.parse(event.data)
-      if (data.case_id === id) {
-        setWsEvents((prev) => [...prev, data])
-        if (data.event === "REPORT_READY") {
-          refetch()
-        }
-      }
-    }
-    return () => ws.close()
-  }, [id, refetch])
+  // (Live updates handled by LiveInvestigationContext now)
 
   // Auto-scroll reasoning panel
   useEffect(() => {
     reasoningEndRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" })
-  }, [wsEvents, caseData?.agent_actions])
+  }, [wsEvents, caseData?.agent_executions])
 
   const formatStatus = (s: string) => {
     if (!s) return ""
@@ -131,18 +127,15 @@ export default function InvestigationDetail() {
   }
 
   // Gather timeline data
-  const timelineActions = [...(caseData?.agent_actions || [])]
-    .filter((a: any) => a.agent_name === "Forensic Timeline Analyst")
-    .sort(
-      (a: any, b: any) =>
-        new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
-    )
-  const timelineAction = timelineActions[timelineActions.length - 1]
-  let timelineEvents = timelineAction?.output_data?.timeline || []
+  const timelineExecution = caseData?.agent_executions?.find(
+    (e: any) => e.agent_name === "Forensic Timeline Analyst" && e.status === "completed"
+  )
+  const timelineReasoning = timelineExecution?.reasoning_steps?.find(
+    (s: any) => s.step_type === "reasoning_complete"
+  )
+  let timelineEvents = timelineReasoning?.content?.raw?.timeline || []
   if (!Array.isArray(timelineEvents)) {
-    if (timelineAction?.output_data?.result?.timeline)
-      timelineEvents = timelineAction.output_data.result.timeline
-    else timelineEvents = []
+    timelineEvents = []
   }
   // Deduplicate
   const uniqueTimelineEvents: any[] = []
@@ -155,30 +148,14 @@ export default function InvestigationDetail() {
     }
   }
 
-  // Gather agent reasoning (most recent run)
-  const sortedActions = [...(caseData?.agent_actions || [])].sort(
-    (a: any, b: any) =>
-      new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+  // SOC Lead summary (using executions/reasoning_steps)
+  const socLeadExecution = caseData?.agent_executions?.find(
+    (e: any) => e.agent_name === "SOC Lead" && (e.status === "completed" || e.status === "degraded")
   )
-  let recentActions: any[] = []
-  if (sortedActions.length > 0) {
-    const lastTime = new Date(
-      sortedActions[sortedActions.length - 1].created_at
-    ).getTime()
-    recentActions = sortedActions.filter(
-      (a: any) => lastTime - new Date(a.created_at).getTime() < 300000
-    )
-  }
-
-  // SOC Lead summary
-  const socLeadActions = [...(caseData?.agent_actions || [])]
-    .filter((a: any) => a.agent_name === "SOC Lead")
-    .sort(
-      (a: any, b: any) =>
-        new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
-    )
-  const summary =
-    socLeadActions[socLeadActions.length - 1]?.output_data?.executive_summary
+  const socLeadDecision = socLeadExecution?.reasoning_steps?.find(
+    (s: any) => s.step_type === "decision_made"
+  )
+  const summary = socLeadDecision?.content?.executive_summary
   const summaryText =
     typeof summary === "object"
       ? JSON.stringify(summary)
@@ -195,14 +172,13 @@ export default function InvestigationDetail() {
   }
 
   // Threat intel insight
-  const threatIntelActions = [...(caseData?.agent_actions || [])]
-    .filter((a: any) => a.agent_name === "Threat Intel Analyst")
-    .sort(
-      (a: any, b: any) =>
-        new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
-    )
-  const historicalInsight =
-    threatIntelActions[threatIntelActions.length - 1]?.output_data
+  const threatIntelExecution = caseData?.agent_executions?.find(
+    (e: any) => e.agent_name === "Threat Intel Analyst" && e.status === "completed"
+  )
+  const threatIntelDecision = threatIntelExecution?.reasoning_steps?.find(
+    (s: any) => s.step_type === "decision_made"
+  )
+  const historicalInsight = threatIntelDecision?.content
 
   const sev = severityConfig[caseData?.severity] || severityConfig.INFO
 
@@ -289,6 +265,12 @@ export default function InvestigationDetail() {
           {/* Case Header */}
           <div className="flex items-start justify-between">
             <div>
+              <button
+                onClick={() => router.back()}
+                className="flex items-center gap-1 text-[var(--text-secondary)] hover:text-[var(--accent-color)] text-xs mb-3 transition-colors font-medium bg-white px-2.5 py-1.5 rounded-lg border border-[var(--border-default)] shadow-sm"
+              >
+                <ArrowLeft className="w-3.5 h-3.5" /> Go Back
+              </button>
               <h1 className="text-xl font-bold text-[var(--text-primary)] mb-2">
                 {caseData?.title}
               </h1>
@@ -324,26 +306,22 @@ export default function InvestigationDetail() {
                       <Clock className="w-3 h-3" />
                       {(() => {
                         if (
-                          caseData?.agent_actions &&
-                          caseData.agent_actions.length > 0
+                          caseData?.agent_executions &&
+                          caseData.agent_executions.length > 0
                         ) {
-                          const sorted = [...caseData.agent_actions].sort(
-                            (a: any, b: any) =>
-                              new Date(a.created_at).getTime() -
-                              new Date(b.created_at).getTime()
-                          )
-                          const last = new Date(
-                            sorted[sorted.length - 1].created_at
-                          ).getTime()
-                          const recent = sorted.filter(
-                            (a: any) =>
-                              last - new Date(a.created_at).getTime() < 300000
-                          )
-                          const first = new Date(
-                            recent[0].created_at
-                          ).getTime()
-                          const duration =
-                            Math.max((last - first) / 1000, 0) + 2.1
+                          const times = caseData.agent_executions.flatMap((e: any) => {
+                            const t = []
+                            if (e.started_at) t.push(new Date(e.started_at).getTime())
+                            if (e.completed_at) t.push(new Date(e.completed_at).getTime())
+                            return t
+                          }).filter((t: number) => !isNaN(t))
+                          
+                          if (times.length === 0) return "0.0"
+                          
+                          const first = Math.min(...times)
+                          const last = Math.max(...times)
+                          
+                          const duration = Math.max((last - first) / 1000, 0)
                           return duration.toFixed(1)
                         }
                         return (
@@ -437,6 +415,9 @@ export default function InvestigationDetail() {
             )}
           </div>
 
+          {/* Memory Insights */}
+          <MemoryInsights caseId={id as string} />
+
           {/* Attack Timeline */}
           <div
             className="bg-white rounded-2xl p-5"
@@ -507,11 +488,18 @@ export default function InvestigationDetail() {
 
                           {/* Details */}
                           <div className="text-xs text-[var(--text-secondary)] mt-0.5 leading-relaxed break-words whitespace-pre-wrap min-w-0">
-                            {typeof (t.details || t.description) === "object"
-                              ? JSON.stringify(t.details || t.description)
-                              : t.details ||
-                                t.description ||
-                                "No details provided."}
+                            {typeof (t.details || t.description) === "object" ? (
+                              <div className="flex flex-wrap gap-1.5 mt-1">
+                                {Object.entries(t.details || t.description || {}).map(([key, val]) => (
+                                  <span key={key} className="bg-[var(--surface-sunken)] px-1.5 py-0.5 rounded text-[10px] font-mono border border-[var(--border-default)]">
+                                    <span className="text-[var(--text-primary)] font-medium mr-1">{key}:</span>
+                                    {String(val)}
+                                  </span>
+                                ))}
+                              </div>
+                            ) : (
+                              t.details || t.description || "No details provided."
+                            )}
                           </div>
                         </div>
                       </motion.div>
@@ -749,39 +737,56 @@ export default function InvestigationDetail() {
           </p>
         </div>
         <div className="flex-1 overflow-y-auto px-4 py-4 custom-scrollbar space-y-3">
-          {/* Live WS events */}
+          {/* Live and Replayed WS events */}
           <AnimatePresence>
             {wsEvents.map((evt, idx) => {
-              const avatar =
-                agentAvatars[evt.agent] || defaultAvatar
+              if (evt.type !== "agent_reasoning_step" && evt.event_type !== "investigation_event") return null
+              
+              const avatar = agentAvatars[evt.agent_name] || defaultAvatar
               const AgentIcon = avatar.icon
+              const isFailed = evt.step_type === "step_failed" || evt.step_type === "failed"
+              const isHandoff = evt.step_type === "handoff"
+              const isTool = evt.step_type.startsWith("tool_call")
+              const payload = evt.payload || evt.content || {}
+
               return (
                 <motion.div
                   key={`ws-${idx}`}
                   initial={{ opacity: 0, y: 8 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ duration: 0.2 }}
-                  className="flex items-start gap-2.5"
+                  onClick={() => evt.execution_id && setSelectedExecutionId(evt.execution_id)}
+                  className={`cursor-pointer hover:bg-gray-50 flex items-start gap-2.5 rounded-lg p-2 ${isFailed ? 'bg-red-50' : ''}`}
                 >
                   <div
                     className="w-7 h-7 rounded-full flex items-center justify-center shrink-0 mt-0.5"
-                    style={{ backgroundColor: avatar.bg }}
+                    style={{ backgroundColor: isFailed ? 'var(--severity-high-bg)' : avatar.bg }}
                   >
                     <AgentIcon
                       className="w-3.5 h-3.5"
-                      style={{ color: avatar.color }}
+                      style={{ color: isFailed ? 'var(--severity-high)' : avatar.color }}
                     />
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="text-xs font-semibold text-[var(--text-primary)]">
-                      {evt.agent}
+                      {evt.agent_name} {isFailed && <span className="text-red-500 font-normal ml-1">(Degraded)</span>}
                     </div>
-                    <div className="text-xs text-[var(--text-secondary)] leading-relaxed mt-0.5">
-                      {evt.thought ? (
-                        <span className="italic">&ldquo;{evt.thought}&rdquo;</span>
+                    <div className={`text-xs leading-relaxed mt-0.5 ${isFailed ? 'text-red-700 font-medium' : 'text-[var(--text-secondary)]'}`}>
+                      {isHandoff ? (
+                        <div className="flex items-center gap-1.5 text-[var(--accent-color)] font-medium">
+                          <span>→</span> {payload.text || payload.next_agent}
+                        </div>
+                      ) : isTool ? (
+                        <div className="font-mono text-[10px] bg-[var(--muted)] px-2 py-1 rounded-md inline-block">
+                          {evt.step_type === "tool_call_started" || evt.step_type === "tool_call" ? (
+                            <span className="animate-pulse">⚙️ Running {payload.tool || payload.tool_name}...</span>
+                          ) : (
+                            <span>✅ {payload.tool || payload.tool_name} complete</span>
+                          )}
+                        </div>
                       ) : (
-                        <span className="text-[var(--accent-color)] font-medium">
-                          {evt.event}
+                        <span className={evt.step_type === "decision_made" || evt.step_type === "decision" ? "font-medium text-[var(--text-primary)]" : "italic"}>
+                          &ldquo;{payload.text}&rdquo;
                         </span>
                       )}
                     </div>
@@ -791,49 +796,7 @@ export default function InvestigationDetail() {
             })}
           </AnimatePresence>
 
-          {/* Persisted agent actions */}
-          {recentActions.map((a: any, idx: number) => {
-            const avatar =
-              agentAvatars[a.agent_name] || defaultAvatar
-            const AgentIcon = avatar.icon
-            return (
-              <motion.div
-                key={`db-${idx}`}
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: idx * 0.03 }}
-                className="flex items-start gap-2.5"
-              >
-                <div
-                  className="w-7 h-7 rounded-full flex items-center justify-center shrink-0 mt-0.5"
-                  style={{ backgroundColor: avatar.bg }}
-                >
-                  <AgentIcon
-                    className="w-3.5 h-3.5"
-                    style={{ color: avatar.color }}
-                  />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-semibold text-[var(--text-primary)]">
-                      {a.agent_name}
-                    </span>
-                    <CheckCircle2 className="w-3 h-3 text-[var(--success)]" />
-                  </div>
-                  <div className="text-xs text-[var(--text-secondary)] italic leading-relaxed mt-0.5">
-                    &ldquo;{a.thought}&rdquo;
-                  </div>
-                  {a.action_taken && (
-                    <div className="text-[10px] font-mono text-[var(--accent-color)] mt-1">
-                      → {a.action_taken}
-                    </div>
-                  )}
-                </div>
-              </motion.div>
-            )
-          })}
-
-          {wsEvents.length === 0 && recentActions.length === 0 && (
+          {wsEvents.length === 0 && (
             <div className="flex flex-col items-center justify-center h-full py-12 text-center">
               <Brain className="w-8 h-8 text-[var(--border-default)] mb-3" />
               <p className="text-xs text-[var(--text-secondary)]">

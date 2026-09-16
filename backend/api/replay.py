@@ -1,19 +1,30 @@
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 import uuid
 import asyncio
+from typing import List
 
 from database.session import get_db
 from models.replay import ReplaySession
+from models.user import User
 from schemas.replay import ReplayStartRequest, ReplaySessionResponse
 from replay.engine import ReplayEngine
 from core.events import event_bus
+from core.auth import require_analyst_or_admin, require_authenticated
 
 router = APIRouter()
 
-# Global dict to store running engines for simplicity in Phase 1
 active_engines = {}
+
+def validate_uuid(id_str: str) -> uuid.UUID:
+    try:
+        return uuid.UUID(id_str)
+    except (ValueError, TypeError, AttributeError):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid UUID format: {id_str}"
+        )
 
 async def run_replay_task(engine: ReplayEngine, scenario_name: str, session_id: str):
     try:
@@ -34,8 +45,12 @@ async def run_replay_task(engine: ReplayEngine, scenario_name: str, session_id: 
                 pass
 
 @router.post("/start", response_model=ReplaySessionResponse)
-async def start_replay(request: ReplayStartRequest, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)):
-    # Create DB record
+async def start_replay(
+    request: ReplayStartRequest,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(require_analyst_or_admin),
+    db: AsyncSession = Depends(get_db)
+):
     session_record = ReplaySession(
         scenario_name=request.scenario_name,
         status="PLAYING",
@@ -45,7 +60,6 @@ async def start_replay(request: ReplayStartRequest, background_tasks: Background
     await db.commit()
     await db.refresh(session_record)
 
-    # Start engine (Notice we pass event_bus now, not db session)
     engine = ReplayEngine(event_bus)
     engine.speed_multiplier = request.speed_multiplier
     active_engines[str(session_record.id)] = engine
@@ -55,39 +69,51 @@ async def start_replay(request: ReplayStartRequest, background_tasks: Background
     return session_record
 
 @router.post("/{session_id}/pause")
-async def pause_replay(session_id: str, db: AsyncSession = Depends(get_db)):
+async def pause_replay(
+    session_id: str,
+    current_user: User = Depends(require_analyst_or_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    session_uuid = validate_uuid(session_id)
     engine = active_engines.get(session_id)
     if engine:
         engine.is_playing = False
         await event_bus.publish("ReplayPaused", {"session_id": session_id})
         
-    # Update DB
-    result = await db.execute(select(ReplaySession).where(ReplaySession.id == uuid.UUID(session_id)))
+    result = await db.execute(select(ReplaySession).where(ReplaySession.id == session_uuid))
     session_record = result.scalars().first()
     if session_record:
         session_record.status = "PAUSED"
         await db.commit()
-        return {"status": "paused"}
+        return {"status": "paused", "session_id": session_id}
     
     raise HTTPException(status_code=404, detail="Session not found")
 
 @router.post("/{session_id}/reset")
-async def reset_replay(session_id: str, db: AsyncSession = Depends(get_db)):
+async def reset_replay(
+    session_id: str,
+    current_user: User = Depends(require_analyst_or_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    session_uuid = validate_uuid(session_id)
     engine = active_engines.get(session_id)
     if engine:
         engine.is_playing = False
-        del active_engines[session_id]
+        if session_id in active_engines:
+            del active_engines[session_id]
 
-    # Delete session and events for simplicity in this reset
-    result = await db.execute(select(ReplaySession).where(ReplaySession.id == uuid.UUID(session_id)))
+    result = await db.execute(select(ReplaySession).where(ReplaySession.id == session_uuid))
     session_record = result.scalars().first()
     if session_record:
         session_record.status = "FINISHED"
         await db.commit()
 
-    return {"status": "reset"}
+    return {"status": "reset", "session_id": session_id}
 
-@router.get("/status", response_model=list[ReplaySessionResponse])
-async def get_status(db: AsyncSession = Depends(get_db)):
+@router.get("/status", response_model=List[ReplaySessionResponse])
+async def get_status(
+    current_user: User = Depends(require_authenticated),
+    db: AsyncSession = Depends(get_db)
+):
     result = await db.execute(select(ReplaySession).order_by(ReplaySession.created_at.desc()))
     return result.scalars().all()

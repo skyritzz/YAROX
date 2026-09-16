@@ -1,8 +1,10 @@
 from typing import List
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
+from datetime import datetime, timezone
+
 from models.event import Event
-from models.investigation import InvestigationCase, EvidenceItem, InvestigationStatus
+from models.investigation import InvestigationCase, EvidenceItem, InvestigationStatus, Severity
 from models.mitre import AttackTechnique
 from detection.rules import (
     BaseDetectionRule,
@@ -11,6 +13,13 @@ from detection.rules import (
     SuspiciousProcessExecution,
     LateralMovement
 )
+
+SEVERITY_ORDER = {
+    Severity.LOW: 1,
+    Severity.MEDIUM: 2,
+    Severity.HIGH: 3,
+    Severity.CRITICAL: 4
+}
 
 class DetectionEngine:
     def __init__(self):
@@ -27,9 +36,8 @@ class DetectionEngine:
                 explanation = rule.explain(event)
                 
                 from correlation.engine import correlation_engine
-                from datetime import datetime, timezone
                 
-                # Check for Correlation
+                # Check for Correlation with existing active case
                 case = await correlation_engine.find_related_case(db, event, explanation['mitre_technique_name'])
                 
                 if not case:
@@ -45,6 +53,20 @@ class DetectionEngine:
                 else:
                     # Update Existing Case
                     case.updated_at = datetime.now(timezone.utc)
+                    
+                    # In-flight severity escalation (Never downgrade existing severity)
+                    new_sev = explanation.get('severity')
+                    if new_sev:
+                        cur_rank = SEVERITY_ORDER.get(case.severity, 1)
+                        new_rank = SEVERITY_ORDER.get(new_sev, 1)
+                        if new_rank > cur_rank:
+                            case.severity = new_sev
+                            
+                    # Update title if multi-stage progression adds new technique
+                    new_tech_name = explanation.get('mitre_technique_name')
+                    if new_tech_name and new_tech_name not in case.title:
+                        case.title = f"{case.title} + {new_tech_name}"
+                        
                     db.add(case)
                 
                 # Evaluate Sigma Rules
@@ -58,7 +80,9 @@ class DetectionEngine:
                     sigma_risk = 0.92
                 
                 # Check if identical evidence already exists in this case
-                artifact_val = event.raw_log.get('metadata', {}).get('command_line') or event.user_name or event.hostname
+                raw_dict = event.raw_log if isinstance(event.raw_log, dict) else {}
+                raw_meta = raw_dict.get('metadata', {})
+                artifact_val = raw_meta.get('command_line') or raw_dict.get('command_line') or event.user_name or event.hostname
                 ev_type = explanation['evidence_type']
                 
                 existing_ev = await db.execute(
@@ -81,7 +105,7 @@ class DetectionEngine:
                     )
                     db.add(evidence)
                 
-                # Create MITRE Technique if it doesn't already exist for this case
+                # Create MITRE Technique if it doesn't already exist for this case (Deduplication)
                 tech_id = explanation['mitre_technique_id']
                 existing_tech = await db.execute(
                     select(AttackTechnique).where(
@@ -128,11 +152,12 @@ class DetectionEngine:
         user = await get_or_create(EntityType.USER, event.user_name)
         host = await get_or_create(EntityType.HOST, event.hostname)
         
-        process_name = event.raw_log.get('metadata', {}).get('process_name')
+        raw_dict = event.raw_log if isinstance(event.raw_log, dict) else {}
+        process_name = raw_dict.get('metadata', {}).get('process_name') or raw_dict.get('process_name')
         process = await get_or_create(EntityType.PROCESS, process_name)
         
         # IP addresses from metadata
-        ip = await get_or_create(EntityType.IP, event.raw_log.get('metadata', {}).get('ip_address'))
+        ip = await get_or_create(EntityType.IP, raw_dict.get('metadata', {}).get('ip_address') or raw_dict.get('ip'))
         
         if user and host:
             db.add(SecurityRelationship(source_id=user.id, target_id=host.id, action="logged into", case_id=case_id))

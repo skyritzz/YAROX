@@ -4,6 +4,7 @@ from datetime import datetime, timezone, timedelta
 from collections import defaultdict
 from models.event import Event
 from models.investigation import Severity
+from core.taxonomy import taxonomy_normalizer, CanonicalEventType
 
 class BaseDetectionRule(ABC):
     def __init__(self):
@@ -27,11 +28,18 @@ class FailedLoginBruteForce(BaseDetectionRule):
         self.window = timedelta(minutes=5)
 
     def match(self, event: Event) -> bool:
-        if event.event_type.lower() in ['login failed', 'authentication failed']:
+        c_type = taxonomy_normalizer.normalize(event.event_type, event.raw_log)
+        if c_type == CanonicalEventType.AUTH_FAILURE or event.event_type.lower() in ['login failed', 'authentication failed', 'authentication failure', 'logon failure', 'auth_failure']:
             user = event.user_name or "unknown"
             now = event.timestamp
+            if now.tzinfo is None:
+                now = now.replace(tzinfo=timezone.utc)
             
-            # Clean up old events
+            # Clean up old events with timezone awareness
+            self.failed_logins[user] = [
+                t if t.tzinfo is not None else t.replace(tzinfo=timezone.utc)
+                for t in self.failed_logins[user]
+            ]
             self.failed_logins[user] = [t for t in self.failed_logins[user] if now - t <= self.window]
             self.failed_logins[user].append(now)
             
@@ -53,8 +61,9 @@ class FailedLoginBruteForce(BaseDetectionRule):
 
 class PrivilegeEscalation(BaseDetectionRule):
     def match(self, event: Event) -> bool:
+        c_type = taxonomy_normalizer.normalize(event.event_type, event.raw_log)
         evt_type = event.event_type.lower()
-        if 'privilege' in evt_type or 'admin assignment' in evt_type or 'permission change' in evt_type:
+        if c_type == CanonicalEventType.PRIVILEGE_CHANGE or 'privilege' in evt_type or 'admin assignment' in evt_type or 'permission change' in evt_type:
             return True
         return False
 
@@ -70,16 +79,20 @@ class PrivilegeEscalation(BaseDetectionRule):
 
 class SuspiciousProcessExecution(BaseDetectionRule):
     def match(self, event: Event) -> bool:
-        if event.event_type.lower() in ['process create', 'process execution', 'process creation']:
-            metadata = event.raw_log.get('metadata', {})
-            raw = metadata.get('command_line', '').lower()
+        c_type = taxonomy_normalizer.normalize(event.event_type, event.raw_log)
+        evt_type = event.event_type.lower()
+        if c_type == CanonicalEventType.PROCESS_EXECUTION or evt_type in ['process create', 'process execution', 'process creation']:
+            raw_dict = event.raw_log if isinstance(event.raw_log, dict) else {}
+            metadata = raw_dict.get('metadata', {})
+            raw = str(metadata.get('command_line', raw_dict.get('command_line', ''))).lower()
             if 'powershell' in raw or 'cmd.exe' in raw or '-enc' in raw or 'encodedcommand' in raw:
                 return True
         return False
 
     def explain(self, event: Event) -> Dict[str, Any]:
-        metadata = event.raw_log.get('metadata', {})
-        cmdline = metadata.get('command_line', 'Unknown')
+        raw_dict = event.raw_log if isinstance(event.raw_log, dict) else {}
+        metadata = raw_dict.get('metadata', {})
+        cmdline = metadata.get('command_line') or raw_dict.get('command_line', 'Unknown')
         return {
             "description": f"Suspicious command line execution detected: {cmdline}",
             "severity": Severity.HIGH,
@@ -97,15 +110,22 @@ class LateralMovement(BaseDetectionRule):
         self.window = timedelta(minutes=10)
 
     def match(self, event: Event) -> bool:
+        c_type = taxonomy_normalizer.normalize(event.event_type, event.raw_log)
         evt_type = event.event_type.lower()
-        if 'login' in evt_type or 'session' in evt_type or 'remote' in evt_type:
+        if c_type in (CanonicalEventType.REMOTE_SESSION, CanonicalEventType.USER_LOGON) or any(k in evt_type for k in ('login', 'session', 'remote')):
             user = event.user_name
             host = event.hostname
-            if user and host:
+            if user and host and user != "unknown" and host != "unknown":
                 now = event.timestamp
+                if now.tzinfo is None:
+                    now = now.replace(tzinfo=timezone.utc)
+                
+                last_seen = self.user_hosts[user]["last_seen"]
+                if last_seen.tzinfo is None:
+                    last_seen = last_seen.replace(tzinfo=timezone.utc)
                 
                 # Check window
-                if now - self.user_hosts[user]["last_seen"] > self.window:
+                if now - last_seen > self.window:
                     self.user_hosts[user]["hosts"].clear()
                     
                 self.user_hosts[user]["hosts"].add(host)

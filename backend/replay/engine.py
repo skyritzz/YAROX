@@ -58,6 +58,12 @@ class ReplayEngine:
             if prev_time is not None:
                 delta = (current_time - prev_time).total_seconds()
                 sleep_time = max(0, delta / self.speed_multiplier)
+                
+                # Smart Fast-Forward: If the gap between events is too large, cap the real-world sleep time
+                # so the simulation doesn't appear frozen (e.g. waiting 30 mins for a 5-hour dataset gap at 10x)
+                if sleep_time > 1.0:
+                    sleep_time = 1.0
+                    
                 if sleep_time > 0:
                     await asyncio.sleep(sleep_time)
 
@@ -65,16 +71,17 @@ class ReplayEngine:
             parsed_data = self.parser.parse(raw_event)
             await self.event_bus.publish("EventNormalized", parsed_data)
             
-            async with AsyncSessionLocal() as db:
-                # UUID conversion not strictly needed if string is valid format, but to be safe
-                import uuid
-                try:
-                    db_session = await db.get(ReplaySession, uuid.UUID(session_id))
-                    if db_session:
-                        db_session.current_index = f"{i+1}/{total_events}"
-                        await db.commit()
-                except Exception as e:
-                    print("Error updating session progress:", e)
+            # Throttle database progress updates to prevent massive I/O bottlenecks during fast replays
+            if i % 10 == 0 or i == total_events - 1:
+                async with AsyncSessionLocal() as db:
+                    import uuid
+                    try:
+                        db_session = await db.get(ReplaySession, uuid.UUID(session_id))
+                        if db_session:
+                            db_session.current_index = f"{i+1}/{total_events}"
+                            await db.commit()
+                    except Exception as e:
+                        print("Error updating session progress:", e)
 
             prev_time = current_time
 

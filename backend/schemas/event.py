@@ -16,3 +16,16 @@ class EventResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+class InvestigationEvent(BaseModel):
+    event_id: str
+    investigation_id: str
+    execution_id: str
+    timestamp: str
+    agent_name: str
+    event_type: str  # e.g., "reasoning_step", "tool_call"
+    step_type: str   # dynamic mapped step types
+    payload: Dict[str, Any]
+    confidence: Optional[float] = None
+    evidence_ids: list[str] = []
+    tool_call_id: Optional[str] = None

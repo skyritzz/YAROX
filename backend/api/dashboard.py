@@ -7,11 +7,16 @@ from datetime import datetime, timezone
 from database.session import get_db
 from models.event import Event
 from models.replay import ReplaySession
+from models.user import User
+from core.auth import require_authenticated
 
 router = APIRouter()
 
 @router.get("/stats")
-async def get_dashboard_stats(db: AsyncSession = Depends(get_db)):
+async def get_dashboard_stats(
+    current_user: User = Depends(require_authenticated),
+    db: AsyncSession = Depends(get_db)
+):
     # Total events
     total_events_result = await db.execute(select(func.count(Event.id)))
     total_events = total_events_result.scalar() or 0
@@ -24,7 +29,6 @@ async def get_dashboard_stats(db: AsyncSession = Depends(get_db)):
     replay_result = await db.execute(select(ReplaySession).order_by(ReplaySession.created_at.desc()).limit(1))
     latest_session = replay_result.scalars().first()
     
-    # Calculate Elapsed and Progress (Mock logic based on total events for now)
     elapsed_seconds = 0
     progress_percent = 0
     events_per_sec = 0
@@ -55,20 +59,24 @@ async def get_dashboard_stats(db: AsyncSession = Depends(get_db)):
             "message": f"Replay Started ({latest_session.scenario_name}) - Speed: {latest_session.speed_multiplier}x"
         })
     
-    from models.investigation import AgentAction
+    from models.investigation import AgentReasoningStep, AgentExecution
     
-    recent_actions_result = await db.execute(select(AgentAction).order_by(desc(AgentAction.created_at)).limit(15))
-    recent_actions = recent_actions_result.scalars().all()
-    for action in recent_actions:
-        # Some agent actions might have empty string or just thought
-        msg = action.thought or action.action_taken or "Analyzing data"
+    recent_actions_result = await db.execute(
+        select(AgentReasoningStep, AgentExecution.agent_name)
+        .join(AgentExecution, AgentReasoningStep.execution_id == AgentExecution.id)
+        .order_by(desc(AgentReasoningStep.timestamp))
+        .limit(15)
+    )
+    recent_actions = recent_actions_result.all()
+    for step, agent_name in recent_actions:
+        msg = step.content.get("text", "Analyzing data") if isinstance(step.content, dict) else "Analyzing data"
         if len(msg) > 120:
             msg = msg[:120] + "..."
             
         activity_feed.append({
-            "timestamp": action.created_at.isoformat(),
+            "timestamp": step.timestamp.isoformat() if step.timestamp else "",
             "message": msg,
-            "agent_name": action.agent_name
+            "agent_name": agent_name
         })
         
     # Sort activity descending

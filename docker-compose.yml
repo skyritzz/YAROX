@@ -4,15 +4,14 @@ services:
     image: postgres:15-alpine
     container_name: yarox-postgres
     environment:
-      POSTGRES_USER: yarox
-      POSTGRES_PASSWORD: yaroxpassword
-      POSTGRES_DB: yarox
-    ports:
-      - "5432:5432"
+      POSTGRES_USER: ${POSTGRES_USER:-yarox}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-yaroxpassword}
+      POSTGRES_DB: ${POSTGRES_DB:-yarox}
+    # Security: Internal database port is not exposed to the host machine
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U yarox -d yarox"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-yarox} -d ${POSTGRES_DB:-yarox}"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -20,8 +19,7 @@ services:
   redis:
     image: redis:7-alpine
     container_name: yarox-redis
-    ports:
-      - "6379:6379"
+    # Security: Internal broker port is not exposed to the host machine
     volumes:
       - redis_data:/data
     healthcheck:
@@ -34,12 +32,10 @@ services:
     image: minio/minio:RELEASE.2024-03-30T09-41-56Z
     container_name: yarox-minio
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
     command: server /data --console-address ":9001"
-    ports:
-      - "9000:9000"
-      - "9001:9001"
+    # Security: Internal storage port is not exposed to the host machine
     volumes:
       - minio_data:/data
     healthcheck:
@@ -51,9 +47,7 @@ services:
   qdrant:
     image: qdrant/qdrant:v1.8.2
     container_name: yarox-qdrant
-    ports:
-      - "6333:6333"
-      - "6334:6334"
+    # Security: Internal vector database port is not exposed to the host machine
     volumes:
       - qdrant_data:/qdrant/storage
 
@@ -76,8 +70,12 @@ services:
       qdrant:
         condition: service_started
     environment:
-      - DATABASE_URL=postgresql+asyncpg://yarox:yaroxpassword@postgres:5432/yarox
-      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=${DATABASE_URL:-postgresql+asyncpg://yarox:yaroxpassword@postgres:5432/yarox}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - QDRANT_URL=${QDRANT_URL:-http://qdrant:6333}
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-yarox-dev-insecure-secret-key-change-in-production-2026-phase4a}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:3002,http://127.0.0.1:3000,http://127.0.0.1:3002}
 
   celery_worker:
     build:
@@ -91,10 +89,11 @@ services:
     depends_on:
       - redis
     environment:
-      - DATABASE_URL=postgresql+asyncpg://yarox:yaroxpassword@postgres:5432/yarox
-      - REDIS_URL=redis://redis:6379/0
-      - CELERY_BROKER_URL=redis://redis:6379/0
-      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - DATABASE_URL=${DATABASE_URL:-postgresql+asyncpg://yarox:yaroxpassword@postgres:5432/yarox}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - QDRANT_URL=${QDRANT_URL:-http://qdrant:6333}
+      - CELERY_BROKER_URL=${REDIS_URL:-redis://redis:6379/0}
+      - CELERY_RESULT_BACKEND=${REDIS_URL:-redis://redis:6379/0}
 
   frontend:
     build:

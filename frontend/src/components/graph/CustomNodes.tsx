@@ -1,11 +1,14 @@
 import { Handle, Position, BaseEdge, getBezierPath, EdgeProps, EdgeLabelRenderer } from "@xyflow/react"
-import { User, Monitor, Terminal, Globe, Clock, FileText, ExternalLink } from "lucide-react"
+import { User, Monitor, Terminal, Globe, Clock, FileText, ExternalLink, History } from "lucide-react"
 import * as Tooltip from '@radix-ui/react-tooltip'
 
 interface NodeData {
   label: string
   isCritical?: boolean
   type?: string
+  seenBefore?: boolean
+  confidenceScore?: number
+  matchType?: string
 }
 
 const NodeWrapper = ({
@@ -40,6 +43,14 @@ const NodeWrapper = ({
               position={Position.Top}
               className="w-2 h-2 !bg-[var(--border-default)] !border-white transition-colors group-hover:!bg-[var(--accent-color)]"
             />
+            
+            {data?.seenBefore && (
+              <div className="absolute -top-3 -right-3 bg-purple-600 text-white text-[10px] font-bold px-2 py-1 rounded-full shadow-md border-2 border-white flex items-center gap-1 z-10">
+                <History className="w-3 h-3" />
+                Seen ({Math.round((data.confidenceScore || 0) * 100)}%)
+              </div>
+            )}
+            
             {children}
             <Handle
               type="source"
@@ -61,8 +72,20 @@ const NodeWrapper = ({
             </div>
             <div className="flex items-center gap-2 mb-3">
               <FileText className="w-3.5 h-3.5 text-[var(--text-secondary)]" />
-              <span className="text-xs text-[var(--text-primary)] font-medium">3 Evidence Items</span>
+              <span className="text-xs text-[var(--text-primary)] font-medium">Evidence Item</span>
             </div>
+            
+            {data?.seenBefore && (
+              <div className="flex flex-col gap-1 mb-3 p-2 bg-purple-50 rounded-lg border border-purple-100">
+                <span className="text-[10px] text-purple-700 font-bold uppercase tracking-wider flex items-center gap-1">
+                  <History className="w-3 h-3" /> Memory Match: {data.matchType}
+                </span>
+                <span className="text-[10px] text-purple-600/80">
+                  Confidence Score: {((data.confidenceScore || 0) * 100).toFixed(1)}%
+                </span>
+              </div>
+            )}
+            
             <a href="/investigations" className="inline-flex items-center gap-1.5 text-xs text-[var(--accent-color)] hover:underline font-medium">
               View Investigation <ExternalLink className="w-3 h-3" />
             </a>

@@ -347,6 +347,12 @@ export default function CommandCenter() {
               {stats?.events_per_sec || 0} events/s
             </div>
           )}
+
+          {/* Live Telemetry Ingestion Gateway Status Badge */}
+          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50/80 border border-emerald-200 text-xs font-medium text-emerald-700">
+            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+            Live Gateway: Active
+          </div>
         </div>
 
         {/* ============================================================

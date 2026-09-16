@@ -15,6 +15,7 @@ import {
   ChevronRight,
 } from "lucide-react"
 import { format } from "date-fns"
+import { MemoryInsights } from "@/components/investigation/MemoryInsights"
 
 /* ================================================================
    Severity helpers
@@ -73,33 +74,28 @@ export default function ReportsPage() {
   }
 
   // Extract report content from selected case
-  const socLeadAction = reportData?.agent_actions
-    ?.filter((a: any) => a.agent_name === "SOC Lead")
-    ?.sort(
-      (a: any, b: any) =>
-        new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
-    )
-    ?.pop()
-
-  const executiveSummary = socLeadAction?.output_data?.executive_summary
+  const socLeadExecution = reportData?.agent_executions?.find(
+    (e: any) => e.agent_name === "SOC Lead" && e.status === "completed"
+  )
+  const socLeadDecision = socLeadExecution?.reasoning_steps?.find(
+    (s: any) => s.step_type === "decision_made"
+  )
+  const executiveSummary = socLeadDecision?.content?.executive_summary
   const summaryText =
     typeof executiveSummary === "object"
       ? JSON.stringify(executiveSummary)
       : executiveSummary || null
 
   // Timeline
-  const timelineAction = reportData?.agent_actions
-    ?.filter((a: any) => a.agent_name === "Forensic Timeline Analyst")
-    ?.sort(
-      (a: any, b: any) =>
-        new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
-    )
-    ?.pop()
-  let timelineEvents = timelineAction?.output_data?.timeline || []
+  const timelineExecution = reportData?.agent_executions?.find(
+    (e: any) => e.agent_name === "Forensic Timeline Analyst" && e.status === "completed"
+  )
+  const timelineReasoning = timelineExecution?.reasoning_steps?.find(
+    (s: any) => s.step_type === "reasoning_complete"
+  )
+  let timelineEvents = timelineReasoning?.content?.raw?.timeline || []
   if (!Array.isArray(timelineEvents)) {
-    if (timelineAction?.output_data?.result?.timeline)
-      timelineEvents = timelineAction.output_data.result.timeline
-    else timelineEvents = []
+    timelineEvents = []
   }
   const uniqueTimeline: any[] = []
   const seenT = new Set()
@@ -283,6 +279,9 @@ export default function ReportsPage() {
                 </div>
               )}
             </div>
+            
+            {/* Memory Insights / Historical Comparison */}
+            <MemoryInsights caseId={reportData.id} />
 
             {/* Timeline (condensed) */}
             {uniqueTimeline.length > 0 && (
