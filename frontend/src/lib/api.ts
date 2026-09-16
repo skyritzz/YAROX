@@ -38,6 +38,24 @@ api.interceptors.request.use(async (config) => {
   return config;
 }, (error) => Promise.reject(error));
 
+/**
+ * Downloads the PDF rendered from the case's current persisted report.
+ * Uses the authenticated API client (window.open cannot send the bearer token).
+ */
+export async function downloadReportPdf(caseId: string): Promise<void> {
+  const res = await api.get(`/investigations/${caseId}/export`, { responseType: 'blob' });
+  const url = URL.createObjectURL(res.data);
+  const link = document.createElement('a');
+  link.href = url;
+  const disposition: string = res.headers['content-disposition'] || '';
+  const match = disposition.match(/filename=([^;]+)/);
+  link.download = match ? match[1] : `SOC_Report_${caseId}.pdf`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
 // Response interceptor to re-authenticate on 401
 api.interceptors.response.use(
   (response) => response,

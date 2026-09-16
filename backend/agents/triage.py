@@ -1,9 +1,12 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from models.investigation import InvestigationCase, Severity
 from agents.base import BaseAgent
+from agents.evidence import evidence_for_prompt, FINDINGS_FORMAT_INSTRUCTION, PROMPT_EVIDENCE_MAX_CHARS
 from services.llm_service import llm_service
 from core.utils import sanitize_evidence, build_sandboxed_agent_prompt
 import json
+
+SEVERITY_RANK = {"LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
 
 class TriageAgent(BaseAgent):
     def __init__(self):
@@ -15,26 +18,25 @@ class TriageAgent(BaseAgent):
 
     async def analyze(self, db: AsyncSession, case: InvestigationCase, evidence: list, memory_context=None) -> dict:
         execution = await self.start_execution(db, case.id)
-        
+        allowed_ids = {str(e.id) for e in evidence}
+        deterministic_severity = case.severity.value if case.severity else "MEDIUM"
+
         try:
             # Observation
             await self.emit_step(db, execution, "observation_started", {
                 "text": f"Reviewing {len(evidence)} pieces of evidence for case: {case.title}",
                 "evidence_count": len(evidence)
-            })
-            
-            raw_evidence_list = [
-                {"artifact": e.artifact, "type": e.evidence_type, "reason": e.reason, "importance": e.importance_score}
-                for e in evidence
-            ]
-            evidence_block = sanitize_evidence(raw_evidence_list)
-            
+            }, evidence_ids=sorted(allowed_ids))
+
+            evidence_block = sanitize_evidence(evidence_for_prompt(evidence), max_length=PROMPT_EVIDENCE_MAX_CHARS)
+
             role_desc = "You are a Triage Analyst evaluating security telemetry."
             task_desc = f"Case Title: {case.title}\nInitial Rule Description: {case.description or ''}\nEvaluate the provided security evidence."
-            format_desc = """Return a JSON object with:
-1. "severity": ("LOW", "MEDIUM", "HIGH", "CRITICAL")
-2. "summary": A concise factual summary of the incident (max 3 sentences).
-3. "priority_score": A float between 0.0 and 1.0 indicating urgency.
+            format_desc = f"""Return a JSON object with:
+"severity": ("LOW", "MEDIUM", "HIGH", "CRITICAL")
+"summary": A concise factual summary of the incident (max 3 sentences).
+"priority_score": A float between 0.0 and 1.0 indicating urgency.
+{FINDINGS_FORMAT_INSTRUCTION}
 Return ONLY valid JSON."""
 
             full_prompt = build_sandboxed_agent_prompt(
@@ -43,79 +45,97 @@ Return ONLY valid JSON."""
                 evidence_block=evidence_block,
                 output_format_instruction=format_desc
             )
-            
+
             # Reasoning
             await self.emit_step(db, execution, "reasoning_started", {
                 "text": "Analyzing detection severity and formulating summary within sandboxed boundary."
             })
-            
+
             response_text = await self.call_llm_with_timeout(
-                llm_service.generate(full_prompt, "", json_format=True), 
+                llm_service.generate(full_prompt, "", json_format=True),
                 timeout_seconds=120,
                 execution=execution
             )
-            
+
             try:
                 result = json.loads(response_text)
             except Exception:
                 raise Exception("LLM failed to return valid JSON.")
+            if not isinstance(result, dict):
+                raise Exception("LLM triage output is not a JSON object.")
 
             # Priority 7: Deterministic Security Guardrails
             proposed_severity = str(result.get("severity", "MEDIUM")).upper()
-            if proposed_severity not in ("LOW", "MEDIUM", "HIGH", "CRITICAL"):
+            if proposed_severity not in SEVERITY_RANK:
                 proposed_severity = "MEDIUM"
-                
-            priority_score = float(result.get("priority_score", 0.5))
-            priority_score = max(0.0, min(1.0, priority_score))
-            
-            # Guardrail: Prevent silent downgrade if a rule established CRITICAL / HIGH
-            deterministic_severity = case.severity.value if case.severity else "MEDIUM"
-            if deterministic_severity in ("CRITICAL", "HIGH") and proposed_severity == "LOW":
-                # Enforce floor to prevent prompt-injection evasion
-                proposed_severity = "MEDIUM"
-                priority_score = max(priority_score, 0.6)
-                result["guardrail_applied"] = "Prevented downgrade from deterministic high-severity trigger"
 
-            result["severity"] = proposed_severity
-            result["priority_score"] = priority_score
+            try:
+                priority_score = max(0.0, min(1.0, float(result.get("priority_score", 0.5))))
+            except (TypeError, ValueError):
+                priority_score = None
+
+            # Guardrail: the deterministic rule severity is a floor the LLM cannot lower
+            guardrail = None
+            if SEVERITY_RANK[proposed_severity] < SEVERITY_RANK.get(deterministic_severity, 2):
+                guardrail = f"Prevented downgrade from deterministic {deterministic_severity} to {proposed_severity}"
+                proposed_severity = deterministic_severity
+
+            summary = result.get("summary") if isinstance(result.get("summary"), str) else None
 
             await self.emit_step(db, execution, "reasoning_complete", {
                 "text": "Triage analysis complete with guardrails verified.",
                 "raw": result
             })
-                
+
+            findings = await self.record_findings(db, execution, case.id, result.get("findings"), allowed_ids)
+
+            triage = {
+                "status": "completed",
+                "execution_id": str(execution.id),
+                "severity": proposed_severity,
+                "proposed_severity": str(result.get("severity", "")).upper() or None,
+                "summary": summary,
+                "priority_score": priority_score,
+                "guardrail_applied": guardrail,
+                "findings": findings,
+            }
+
             # Decision
             await self.emit_step(db, execution, "decision_made", {
-                "text": f"Assigned severity: {result.get('severity')}. Priority: {result.get('priority_score')}",
-                "severity": result.get("severity")
-            })
-            
+                "text": f"Assigned severity: {proposed_severity}. Priority: {priority_score}",
+                "severity": proposed_severity,
+                "guardrail_applied": guardrail,
+            }, evidence_ids=sorted({eid for f in findings for eid in f["evidence_ids"]}))
+
             # Handoff
             await self.emit_step(db, execution, "handoff", {
-                "text": "Passing initial triage context to Timeline Agent for temporal reconstruction.",
-                "next_agent": "Timeline Agent"
+                "text": "Passing initial triage context to SOC Lead.",
+                "next_agent": "SOC Lead"
             })
-            
-            await self.finish_execution(db, execution, status="completed", confidence=result.get("priority_score"))
-            return result
-            
+
+            await self.finish_execution(db, execution, status="completed")
+            return triage
+
         except Exception as e:
-            fallback_severity = case.severity.value if case.severity else "HIGH"
-            fallback_result = {
-                "severity": fallback_severity, 
-                "summary": f"Triage fallback applied: {case.title}.", 
-                "priority_score": 0.8 if fallback_severity in ("CRITICAL", "HIGH") else 0.5
-            }
-            
             await self.emit_step(db, execution, "step_failed", {
-                "text": f"Error during analysis: {str(e)}. Degraded to rule-based fallback.",
+                "text": f"Error during analysis: {str(e)}. No triage assessment produced; rule severity {deterministic_severity} stands.",
                 "error": str(e)
             })
-            
+
             await self.emit_step(db, execution, "handoff", {
-                "text": "Passing degraded triage context to Timeline Agent.",
-                "next_agent": "Timeline Agent"
+                "text": "Passing degraded triage context to SOC Lead.",
+                "next_agent": "SOC Lead"
             })
-            
-            await self.finish_execution(db, execution, status="degraded", confidence=0.5)
-            return fallback_result
+
+            await self.finish_execution(db, execution, status="degraded")
+            return {
+                "status": "degraded",
+                "execution_id": str(execution.id),
+                "error": str(e),
+                "severity": deterministic_severity,
+                "proposed_severity": None,
+                "summary": None,
+                "priority_score": None,
+                "guardrail_applied": None,
+                "findings": [],
+            }

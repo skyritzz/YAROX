@@ -9,6 +9,7 @@ from agents.report import ReportAgent
 from agents.memory import MemoryAgent
 from websocket.investigation_ws import manager as ws_manager
 from scoring.confidence import ConfidenceEngine
+from services.report_service import persist_investigation_report
 import traceback
 
 class AgentOrchestrator:
@@ -48,7 +49,7 @@ class AgentOrchestrator:
                     ev = ev_res.scalars().all()
                     await ws_manager.broadcast({"event": "AGENT_THINKING", "event_type": "AGENT_THINKING", "case_id": str(c_id), "investigation_id": str(c_id), "agent": agent.name})
                     return await agent.analyze(session, c, list(ev), **kwargs)
-            
+
             # 1. Run Memory Agent First
             memory_context = await run_agent(self.memory, case.id)
             
@@ -60,20 +61,33 @@ class AgentOrchestrator:
             triage_data, timeline_data, threat_data = await asyncio.gather(triage_task, timeline_task, threat_task)
             
             # 3. Report Generation
-            await ws_manager.broadcast({"event": "AGENT_THINKING", "event_type": "AGENT_THINKING", "case_id": str(case_id), "investigation_id": str(case_id), "agent": self.report.name})
-            report_data = await self.report.analyze(db, case, list(evidence), triage_data, timeline_data, threat_data)
-            
+            report_data = await run_agent(
+                self.report, case.id,
+                triage_data=triage_data, timeline_data=timeline_data, threat_data=threat_data
+            )
+
             # 4. Assign Confidence Score
             p_score = sum(ev.importance_score for ev in evidence) / max(len(evidence), 1) if evidence else 0.5
             final_score, breakdown = ConfidenceEngine.calculate_score(0.8, 0.7, p_score, 0.6)
             case.confidence_score = final_score
             case.confidence_breakdown = breakdown
-            
+            await db.commit()
+
+            # 5. Persist the canonical report (single source for API, UI and PDF)
+            async with AsyncSessionLocal() as report_session:
+                report = await persist_investigation_report(
+                    report_session, case.id, triage_data, timeline_data, threat_data, report_data
+                )
+
             # Priority 9: Case moves to WAITING_FOR_REVIEW. Memory indexing is human-gated upon RESOLVED status.
             case.status = InvestigationStatus.WAITING_FOR_REVIEW
             await db.commit()
-            
-            await ws_manager.broadcast({"event": "REPORT_READY", "event_type": "REPORT_READY", "case_id": str(case_id), "investigation_id": str(case_id)})
+
+            await ws_manager.broadcast({
+                "event": "REPORT_READY", "event_type": "REPORT_READY",
+                "case_id": str(case_id), "investigation_id": str(case_id),
+                "report_id": str(report.id), "report_version": report.version, "report_status": report.status,
+            })
             
         except Exception as e:
             print(f"Orchestrator failed: {e}")

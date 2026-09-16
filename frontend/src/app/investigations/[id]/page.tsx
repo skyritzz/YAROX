@@ -1,7 +1,7 @@
 "use client"
 
 import { useQuery, useMutation } from "@tanstack/react-query"
-import { api } from "@/lib/api"
+import { api, downloadReportPdf } from "@/lib/api"
 import { useParams, useRouter } from "next/navigation"
 import Link from "next/link"
 import { useEffect, useState, useRef } from "react"
@@ -91,8 +91,29 @@ function InvestigationDetailContent() {
     return replaced.charAt(0).toUpperCase() + replaced.slice(1).toLowerCase()
   }
 
+  // Persisted investigation report: the single source for summary and timeline
+  const { data: report } = useQuery({
+    queryKey: ["investigationReport", id, caseData?.status],
+    queryFn: async () => {
+      try {
+        const { data } = await api.get(`/investigations/${id}/report`)
+        return data
+      } catch (err: any) {
+        if (err?.response?.status === 404) return null
+        throw err
+      }
+    },
+    enabled: !!id,
+  })
+
+  const [exportError, setExportError] = useState<string | null>(null)
   const handleExport = async () => {
-    window.open(`http://localhost:8000/investigations/${id}/export`, "_blank")
+    setExportError(null)
+    try {
+      await downloadReportPdf(id as string)
+    } catch (err: any) {
+      setExportError(err?.response?.status === 404 ? "No report generated yet" : "Export failed")
+    }
   }
 
   const updateStatusMutation = useMutation({
@@ -126,40 +147,12 @@ function InvestigationDetailContent() {
     )
   }
 
-  // Gather timeline data
-  const timelineExecution = caseData?.agent_executions?.find(
-    (e: any) => e.agent_name === "Forensic Timeline Analyst" && e.status === "completed"
-  )
-  const timelineReasoning = timelineExecution?.reasoning_steps?.find(
-    (s: any) => s.step_type === "reasoning_complete"
-  )
-  let timelineEvents = timelineReasoning?.content?.raw?.timeline || []
-  if (!Array.isArray(timelineEvents)) {
-    timelineEvents = []
-  }
-  // Deduplicate
-  const uniqueTimelineEvents: any[] = []
-  const seenT = new Set()
-  for (const t of timelineEvents) {
-    const key = `${t.time}-${t.action}-${t.details}`.toLowerCase()
-    if (!seenT.has(key)) {
-      seenT.add(key)
-      uniqueTimelineEvents.push(t)
-    }
-  }
-
-  // SOC Lead summary (using executions/reasoning_steps)
-  const socLeadExecution = caseData?.agent_executions?.find(
-    (e: any) => e.agent_name === "SOC Lead" && (e.status === "completed" || e.status === "degraded")
-  )
-  const socLeadDecision = socLeadExecution?.reasoning_steps?.find(
-    (s: any) => s.step_type === "decision_made"
-  )
-  const summary = socLeadDecision?.content?.executive_summary
-  const summaryText =
-    typeof summary === "object"
-      ? JSON.stringify(summary)
-      : summary || "No AI analysis available."
+  // Timeline and summary come from the persisted report only
+  const uniqueTimelineEvents: any[] = report?.timeline || []
+  const summaryText = report
+    ? report.executive_summary ||
+      "Not available: the SOC Lead did not produce a validated report. Manual review required."
+    : "No report has been generated for this investigation yet."
 
   // MITRE techniques
   const uniqueMitre: any[] = []
@@ -378,6 +371,7 @@ function InvestigationDetailContent() {
               >
                 <Download className="w-3.5 h-3.5" /> Export
               </button>
+              {exportError && <span className="text-[10px] text-red-600">{exportError}</span>}
             </div>
           </div>
 
@@ -402,11 +396,16 @@ function InvestigationDetailContent() {
               <h3 className="text-sm font-semibold text-[var(--text-primary)]">
                 AI Analyst Summary
               </h3>
+              {report && (
+                <span className="text-[10px] text-[var(--text-secondary)]">
+                  report v{report.version} · {report.status}
+                </span>
+              )}
             </div>
             {caseData?.status === "ANALYZING" ? (
               <div className="flex items-center gap-3 text-sm text-[var(--accent-color)] font-medium py-4">
                 <div className="w-4 h-4 border-2 border-[var(--accent-color)] border-t-transparent rounded-full animate-spin" />
-                AI Swarm is actively analyzing evidence...
+                Agents are analyzing the evidence...
               </div>
             ) : (
               <p className="text-sm text-[var(--text-secondary)] leading-relaxed">
@@ -431,6 +430,13 @@ function InvestigationDetailContent() {
               <h3 className="text-sm font-semibold text-[var(--text-primary)]">
                 Attack Story Timeline
               </h3>
+              {report && (
+                <span className="text-[10px] text-[var(--text-secondary)]">
+                  {report.timeline_source === "timeline_agent"
+                    ? "source: Forensic Timeline Analyst (evidence-cited)"
+                    : "source: evidence chronology (timeline agent output unavailable)"}
+                </span>
+              )}
             </div>
 
             {uniqueTimelineEvents.length > 0 ? (
@@ -439,13 +445,6 @@ function InvestigationDetailContent() {
                 <div className="absolute left-[9px] top-2 bottom-2 w-px bg-[var(--border-default)]" />
                 <div className="space-y-4">
                   {uniqueTimelineEvents.map((t: any, idx: number) => {
-                    // Determine if critical
-                    const isCritical =
-                      typeof t.action === "string" &&
-                      (t.action.toLowerCase().includes("credential") ||
-                        t.action.toLowerCase().includes("lateral") ||
-                        t.action.toLowerCase().includes("exfil"))
-
                     return (
                       <motion.div
                         key={idx}
@@ -455,21 +454,7 @@ function InvestigationDetailContent() {
                         className="relative min-w-0 break-words"
                       >
                         {/* Dot on spine */}
-                        <div
-                          className={`absolute -left-6 top-1 w-[10px] h-[10px] rounded-full border-2 ${
-                            isCritical
-                              ? "border-[var(--severity-critical)] bg-[var(--severity-critical-bg)]"
-                              : "border-[var(--border-default)] bg-white"
-                          }`}
-                          style={
-                            isCritical
-                              ? {
-                                  boxShadow:
-                                    "0 0 8px var(--severity-critical)",
-                                }
-                              : undefined
-                          }
-                        />
+                        <div className="absolute -left-6 top-1 w-[10px] h-[10px] rounded-full border-2 border-[var(--border-default)] bg-white" />
 
                         <div className="pb-1 min-w-0">
                           {/* Timestamp chip */}
@@ -501,6 +486,11 @@ function InvestigationDetailContent() {
                               t.details || t.description || "No details provided."
                             )}
                           </div>
+                          {t.evidence_ids?.length > 0 && (
+                            <div className="text-[10px] font-mono text-[var(--text-secondary)] mt-0.5">
+                              evidence: {t.evidence_ids.map((e: string) => e.substring(0, 8)).join(", ")}
+                            </div>
+                          )}
                         </div>
                       </motion.div>
                     )
@@ -509,7 +499,7 @@ function InvestigationDetailContent() {
               </div>
             ) : (
               <div className="text-sm text-[var(--text-secondary)] py-8 text-center">
-                No timeline events extracted yet.
+                No report timeline available yet.
               </div>
             )}
           </div>

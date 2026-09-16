@@ -1,8 +1,16 @@
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Optional, Callable, Awaitable
+from typing import Dict, Any, Optional, Callable, Awaitable, Iterable, List
 import time
 from sqlalchemy.ext.asyncio import AsyncSession
-from models.investigation import InvestigationCase, AgentExecution, AgentReasoningStep, AgentToolCall
+from models.investigation import (
+    InvestigationCase,
+    AgentExecution,
+    AgentReasoningStep,
+    AgentToolCall,
+    AgentFinding,
+    AgentFindingEvidence,
+)
+from agents.evidence import validate_findings
 from websocket.investigation_ws import manager as ws_manager
 from core.utils import sanitize_evidence
 import json
@@ -59,7 +67,8 @@ class BaseAgent(ABC):
         step = AgentReasoningStep(
             execution_id=execution.id,
             step_type=step_type,
-            content=content
+            content=content,
+            evidence_ids=[str(e) for e in evidence_ids]
         )
         db.add(step)
         
@@ -82,9 +91,54 @@ class BaseAgent(ABC):
             "step_type": step_type,
             "payload": content,
             "confidence": confidence,
-            "evidence_ids": evidence_ids,
+            "evidence_ids": [str(e) for e in evidence_ids],
             "tool_call_id": tool_call_id
         })
+
+    async def record_findings(
+        self,
+        db: AsyncSession,
+        execution: AgentExecution,
+        case_id: uuid.UUID,
+        raw_findings: Any,
+        allowed_evidence_ids: Iterable[str],
+    ) -> List[Dict[str, Any]]:
+        """
+        Validates LLM-proposed findings against the evidence contract, persists the accepted
+        ones with their evidence links, and records rejected ones in the reasoning trail.
+        Returns the accepted findings as JSON-serializable dicts.
+        """
+        accepted, rejected = validate_findings(raw_findings, self.name, allowed_evidence_ids)
+        for record in accepted:
+            db.add(AgentFinding(
+                id=record.finding_id,
+                case_id=case_id,
+                execution_id=execution.id,
+                agent_name=record.agent,
+                finding=record.finding,
+                kind=record.kind,
+                confidence=record.confidence,
+                reasoning_summary=record.reasoning_summary,
+                mitre_techniques=record.mitre_techniques,
+                created_at=record.timestamp,
+            ))
+        await db.flush()
+        for record in accepted:
+            for evidence_id in record.evidence_ids:
+                db.add(AgentFindingEvidence(finding_id=record.finding_id, evidence_item_id=evidence_id))
+        await db.commit()
+
+        accepted_dicts = [r.model_dump(mode="json") for r in accepted]
+        cited = sorted({eid for r in accepted_dicts for eid in r["evidence_ids"]})
+        await self.emit_step(db, execution, "findings_recorded", {
+            "text": f"Recorded {len(accepted)} evidence-backed finding(s); rejected {len(rejected)}.",
+            "findings": [
+                {"finding_id": r["finding_id"], "finding": r["finding"], "kind": r["kind"], "evidence_ids": r["evidence_ids"]}
+                for r in accepted_dicts
+            ],
+            "rejected": [r.model_dump(mode="json") for r in rejected],
+        }, evidence_ids=cited)
+        return accepted_dicts
 
     async def run_tool(
         self,

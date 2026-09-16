@@ -1,6 +1,7 @@
 """
 MITRE ATT&CK identifiers must be preserved exactly, including sub-techniques.
 """
+import json
 import uuid
 from unittest.mock import AsyncMock, patch
 
@@ -45,23 +46,26 @@ def test_unknown_sub_technique_is_not_silently_accepted():
 @pytest.mark.asyncio
 async def test_threat_intel_persists_full_sub_technique_ids():
     case_id = uuid.uuid4()
+    evidence_id = uuid.uuid4()
     async with AsyncSessionLocal() as session:
         session.add(InvestigationCase(id=case_id, title="Encoded PowerShell", status=InvestigationStatus.OPEN, severity=Severity.HIGH))
         session.add(EvidenceItem(
-            case_id=case_id, evidence_type="PROCESS_EXECUTION", source="Sysmon",
+            id=evidence_id, case_id=case_id, evidence_type="PROCESS_EXECUTION", source="Sysmon",
             timestamp=datetime.now(timezone.utc), artifact="powershell.exe -enc AAA", reason="encoded command",
         ))
         await session.commit()
 
-    llm_output = """{
+    cited = [str(evidence_id)]
+    llm_output = json.dumps({
         "mitre_mapping": [
-            {"technique_id": "T1059.001", "technique_name": "x", "tactic": "x", "reason": "encoded powershell"},
-            {"technique_id": "T1027", "technique_name": "x", "tactic": "x", "reason": "base64 payload"},
-            {"technique_id": "T1059.999", "technique_name": "x", "tactic": "x", "reason": "made-up sub-technique"},
-            {"technique_id": "T9999", "technique_name": "x", "tactic": "x", "reason": "hallucinated"}
+            {"technique_id": "T1059.001", "technique_name": "x", "tactic": "x", "reason": "encoded powershell", "evidence_ids": cited},
+            {"technique_id": "T1027", "technique_name": "x", "tactic": "x", "reason": "base64 payload", "evidence_ids": cited},
+            {"technique_id": "T1059.999", "technique_name": "x", "tactic": "x", "reason": "made-up sub-technique", "evidence_ids": cited},
+            {"technique_id": "T9999", "technique_name": "x", "tactic": "x", "reason": "hallucinated", "evidence_ids": cited},
+            {"technique_id": "T1110", "technique_name": "x", "tactic": "x", "reason": "no citation", "evidence_ids": []}
         ],
-        "historical_insight": "none"
-    }"""
+        "historical_insight": None
+    })
 
     async with AsyncSessionLocal() as session:
         from sqlalchemy.orm import selectinload

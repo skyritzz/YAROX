@@ -124,7 +124,7 @@ async def websocket_endpoint(
                         "payload": step.content,
                         "timestamp": step.timestamp.isoformat() if step.timestamp else None,
                         "confidence": None,
-                        "evidence_ids": [],
+                        "evidence_ids": step.evidence_ids or [],
                         "tool_call_id": None
                     }))
             except Exception as e:

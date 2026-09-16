@@ -16,8 +16,10 @@ from models.investigation import (
     InvestigationStatus,
     Severity,
     CaseNote,
-    AuditLog
+    AuditLog,
+    InvestigationReport,
 )
+from services.report_service import get_current_report, load_traced_findings
 from models.user import User
 from core.auth import require_authenticated, require_analyst_or_admin
 from core.audit import record_audit_log
@@ -139,13 +141,15 @@ async def get_investigation_execution(
             "step_type": step.step_type,
             "payload": step.content,
             "confidence": execution.confidence if step.step_type == 'decision_made' else None,
-            "evidence_ids": [],
-            "tool_call_id": None
+            "evidence_ids": step.evidence_ids or [],
+            "tool_call_id": step.content.get("tool_call_id") if isinstance(step.content, dict) else None
         })
     timeline.sort(key=lambda x: x["timestamp"] if x["timestamp"] else "")
 
     decision_step = next((s for s in execution.reasoning_steps if s.step_type == 'decision_made'), None)
-    evidence_items = [e for e in execution.case.evidence_items if getattr(e, 'related_agent', None) == execution.agent_name]
+    execution_findings = await load_traced_findings(db, case_uuid, execution_id=exec_uuid)
+    cited_ids = {c["evidence_id"] for f in execution_findings for c in f["evidence"]}
+    evidence_items = [e for e in execution.case.evidence_items if str(e.id) in cited_ids]
 
     return {
         "execution": {
@@ -169,6 +173,7 @@ async def get_investigation_execution(
         },
         "timeline": timeline,
         "evidence": evidence_items,
+        "findings": execution_findings,
         "tool_calls": execution.tool_calls,
         "decision": decision_step.content if decision_step else None
     }
@@ -480,33 +485,115 @@ async def get_case_audit_logs(
     return result.scalars().all()
 
 
-@router.get("/{id}/export")
-async def export_investigation(
+def _report_payload(report: InvestigationReport, findings: list) -> dict:
+    return {
+        "id": str(report.id),
+        "case_id": str(report.case_id),
+        "version": report.version,
+        "is_current": report.is_current,
+        "status": report.status,
+        "generated_at": report.generated_at.isoformat(),
+        "soc_lead_execution_id": str(report.soc_lead_execution_id) if report.soc_lead_execution_id else None,
+        "title": report.title,
+        "severity": report.severity,
+        "confidence_score": report.confidence_score,
+        "executive_summary": report.executive_summary,
+        "findings": findings,
+        "recommendations": report.recommendations,
+        "mitre_techniques": report.mitre_techniques,
+        "timeline": report.timeline,
+        "timeline_source": report.timeline_source,
+        "evidence_ids": report.evidence_ids,
+        "agent_runs": report.agent_runs,
+    }
+
+
+async def _require_current_report(db: AsyncSession, case_uuid: uuid.UUID) -> InvestigationReport:
+    case_res = await db.execute(select(InvestigationCase.id).where(InvestigationCase.id == case_uuid))
+    if not case_res.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Investigation not found")
+    report = await get_current_report(db, case_uuid)
+    if not report:
+        raise HTTPException(status_code=404, detail="No report has been generated for this investigation")
+    return report
+
+
+@router.get("/{id}/report")
+async def get_investigation_report(
+    id: str,
+    current_user: User = Depends(require_authenticated),
+    db: AsyncSession = Depends(get_db)
+):
+    """Returns the current persisted investigation report with fully traced findings."""
+    case_uuid = validate_uuid(id)
+    report = await _require_current_report(db, case_uuid)
+    findings = await load_traced_findings(db, case_uuid, finding_ids=report.finding_ids)
+    return _report_payload(report, findings)
+
+
+@router.get("/{id}/reports")
+async def list_investigation_reports(
     id: str,
     current_user: User = Depends(require_authenticated),
     db: AsyncSession = Depends(get_db)
 ):
     case_uuid = validate_uuid(id)
     result = await db.execute(
-        select(InvestigationCase)
-        .options(
-            selectinload(InvestigationCase.evidence_items),
-            selectinload(InvestigationCase.agent_executions).selectinload(AgentExecution.reasoning_steps),
-            selectinload(InvestigationCase.agent_executions).selectinload(AgentExecution.tool_calls),
-            selectinload(InvestigationCase.mitre_techniques)
-        )
-        .where(InvestigationCase.id == case_uuid)
+        select(InvestigationReport)
+        .where(InvestigationReport.case_id == case_uuid)
+        .order_by(InvestigationReport.version.desc())
     )
-    case = result.scalar_one_or_none()
-    if not case:
+    return [
+        {"id": str(r.id), "version": r.version, "status": r.status, "is_current": r.is_current, "generated_at": r.generated_at.isoformat()}
+        for r in result.scalars().all()
+    ]
+
+
+@router.get("/{id}/findings")
+async def get_investigation_findings(
+    id: str,
+    current_user: User = Depends(require_authenticated),
+    db: AsyncSession = Depends(get_db)
+):
+    """All evidence-backed agent findings for the case, traced to evidence and source events."""
+    case_uuid = validate_uuid(id)
+    case_res = await db.execute(select(InvestigationCase.id).where(InvestigationCase.id == case_uuid))
+    if not case_res.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Investigation not found")
-        
-    pdf_bytes = report_generator.generate_pdf(case, case.evidence_items, case.agent_executions, case.mitre_techniques)
-    
+    return await load_traced_findings(db, case_uuid)
+
+
+@router.get("/{id}/export")
+async def export_investigation(
+    id: str,
+    current_user: User = Depends(require_authenticated),
+    db: AsyncSession = Depends(get_db)
+):
+    """Renders the current persisted report as PDF. The PDF never uses data outside the report."""
+    case_uuid = validate_uuid(id)
+    report = await _require_current_report(db, case_uuid)
+    findings = await load_traced_findings(db, case_uuid, finding_ids=report.finding_ids)
+
+    evidence_rows = (await db.execute(
+        select(EvidenceItem).options(selectinload(EvidenceItem.event)).where(EvidenceItem.case_id == case_uuid)
+    )).scalars().all()
+    evidence = {
+        str(e.id): {
+            "timestamp": e.timestamp.isoformat(),
+            "source": e.source,
+            "evidence_type": e.evidence_type,
+            "event_id": str(e.event_id) if e.event_id else None,
+            "event_payload_sha256": e.event.payload_sha256 if e.event else None,
+        }
+        for e in evidence_rows
+    }
+
+    pdf_bytes = report_generator.generate_pdf(report, findings, evidence)
+
     return Response(
-        content=pdf_bytes, 
-        media_type="application/pdf", 
-        headers={"Content-Disposition": f"attachment; filename=SOC_Report_{case.id}.pdf"}
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename=SOC_Report_{case_uuid}_v{report.version}.pdf"}
     )
 
 @router.get("/graph/entities")

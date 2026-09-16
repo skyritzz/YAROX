@@ -233,8 +233,9 @@ async def test_deterministic_security_guardrail():
                 with patch.object(agent, "finish_execution", return_value=None):
                     result = await agent.analyze(mock_db, case, [])
                     assert result["severity"] != "LOW"
-                    assert result["severity"] == "MEDIUM"
-                    assert "guardrail_applied" in result
+                    # The deterministic rule severity is a floor: the LLM cannot lower CRITICAL at all
+                    assert result["severity"] == "CRITICAL"
+                    assert result["guardrail_applied"]
 
 
 # -----------------------------------------------------------------------------
@@ -267,7 +268,9 @@ async def test_unreviewed_investigation_not_indexed():
                 with patch.object(orch.triage, "analyze", return_value={"summary": "Triage"}):
                     with patch.object(orch.timeline, "analyze", return_value={"timeline": []}):
                         with patch.object(orch.threat_intel, "analyze", return_value={"mitre_mapping": []}):
-                            with patch.object(orch.report, "analyze", return_value={"executive_summary": "Report"}):
+                            with patch.object(orch.report, "analyze", return_value={"executive_summary": "Report"}), \
+                                 patch("agents.orchestrator.persist_investigation_report", new_callable=AsyncMock,
+                                       return_value=MagicMock(id=uuid.uuid4(), version=1, status="complete")):
                                 await orch.run_investigation(mock_db, str(case.id))
                                 
                                 mock_delay.assert_not_called()

@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from core.health import check_health
+from core.health import check_health, probe_postgres
 from core.config import settings, validate_production_settings
 from core.events import event_bus
 from consumers.db_writer import register_consumers
@@ -29,9 +29,12 @@ async def startup_event():
     # Production secret safety check: Prevents booting with insecure dev placeholders in production
     validate_production_settings()
 
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-        
+    # The schema is owned by migrations (scripts/migrate.py), never created implicitly here.
+    # Refuse to serve against a schema that does not match the migration head.
+    status, detail = await probe_postgres()
+    if status != "up":
+        raise RuntimeError(f"Database schema not ready: {detail}. Run `python -m scripts.migrate`.")
+
     # Pre-seed initial default accounts for ADMIN, ANALYST, and VIEWER
     async with AsyncSessionLocal() as session:
         await seed_initial_users(session)

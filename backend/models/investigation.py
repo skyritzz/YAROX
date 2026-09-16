@@ -105,7 +105,9 @@ class AgentReasoningStep(Base):
     
     step_type = Column(String, nullable=False) # observation/tool/reasoning/decision/handoff/failed
     content = Column(JSONB, nullable=False)
-    
+    # Evidence items (EvidenceItem.id) this step refers to
+    evidence_ids = Column(JSONB, nullable=False, default=list)
+
     timestamp = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     
     execution = relationship("AgentExecution", back_populates="reasoning_steps")
@@ -126,6 +128,68 @@ class AgentToolCall(Base):
     error_message = Column(Text, nullable=True)
     
     execution = relationship("AgentExecution", back_populates="tool_calls")
+
+class AgentFinding(Base):
+    """
+    An evidence-backed conclusion produced by an agent. Every finding is linked to at least
+    one EvidenceItem of the same case through agent_finding_evidence.
+    """
+    __tablename__ = "agent_findings"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    case_id = Column(UUID(as_uuid=True), ForeignKey("investigation_cases.id"), nullable=False, index=True)
+    execution_id = Column(UUID(as_uuid=True), ForeignKey("agent_executions.id"), nullable=False, index=True)
+    agent_name = Column(String, nullable=False, index=True)
+
+    finding = Column(Text, nullable=False)
+    # "observation": directly visible in the cited evidence; "hypothesis": an inference from it
+    kind = Column(String, nullable=False)
+    confidence = Column(Float, nullable=True)  # agent-reported, 0..1, null when not provided
+    reasoning_summary = Column(Text, nullable=True)
+    mitre_techniques = Column(JSONB, nullable=False, default=list)
+
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    evidence_links = relationship("AgentFindingEvidence", back_populates="finding", cascade="all, delete-orphan")
+
+class AgentFindingEvidence(Base):
+    __tablename__ = "agent_finding_evidence"
+
+    finding_id = Column(UUID(as_uuid=True), ForeignKey("agent_findings.id", ondelete="CASCADE"), primary_key=True)
+    evidence_item_id = Column(UUID(as_uuid=True), ForeignKey("evidence_items.id"), primary_key=True, index=True)
+
+    finding = relationship("AgentFinding", back_populates="evidence_links")
+    evidence_item = relationship("EvidenceItem")
+
+class InvestigationReport(Base):
+    """
+    Canonical, versioned investigation report. The API, UI and PDF export all read this record.
+    """
+    __tablename__ = "investigation_reports"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    case_id = Column(UUID(as_uuid=True), ForeignKey("investigation_cases.id"), nullable=False, index=True)
+    version = Column(Integer, nullable=False)
+    is_current = Column(Boolean, nullable=False, default=True)
+
+    # "complete": every agent completed; "partial": SOC Lead completed but an upstream agent
+    # degraded; "degraded": SOC Lead did not produce a validated report
+    status = Column(String, nullable=False)
+    generated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    soc_lead_execution_id = Column(UUID(as_uuid=True), ForeignKey("agent_executions.id"), nullable=True)
+
+    title = Column(String, nullable=False)
+    severity = Column(String, nullable=False)
+    confidence_score = Column(Float, nullable=True)
+    executive_summary = Column(Text, nullable=True)
+
+    finding_ids = Column(JSONB, nullable=False, default=list)
+    recommendations = Column(JSONB, nullable=False, default=list)  # [{action, rationale, evidence_ids}]
+    mitre_techniques = Column(JSONB, nullable=False, default=list)  # [{technique_id, technique_name, tactic, reason}]
+    timeline = Column(JSONB, nullable=False, default=list)  # [{time, action, details, evidence_ids}]
+    timeline_source = Column(String, nullable=False)  # "timeline_agent" | "evidence_chronology"
+    evidence_ids = Column(JSONB, nullable=False, default=list)
+    agent_runs = Column(JSONB, nullable=False, default=list)  # [{agent, execution_id, status}]
 
 class InvestigationMemory(Base):
     __tablename__ = "investigation_memory"

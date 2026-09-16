@@ -9,6 +9,9 @@ from models.investigation import (
     AgentReasoningStep,
     AgentToolCall,
     InvestigationMemory,
+    AgentFinding,
+    AgentFindingEvidence,
+    InvestigationReport,
     CaseNote,
     AuditLog
 )
