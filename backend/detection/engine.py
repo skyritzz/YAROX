@@ -119,7 +119,8 @@ class DetectionEngine:
                         technique_id=tech_id,
                         technique_name=explanation['mitre_technique_name'],
                         tactic=explanation['mitre_tactic'],
-                        confidence=0.8,
+                        # Deterministic rule match: the technique is asserted by the rule itself
+                        confidence=1.0,
                         reason=explanation['description']
                     )
                     db.add(mitre)

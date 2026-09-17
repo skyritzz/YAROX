@@ -14,7 +14,7 @@ from core.case_state import INVESTIGATABLE_STATES, validate_transition
 from core.config import settings
 from core.locks import consume_rerun_request, investigation_lock, request_rerun
 from models.investigation import EvidenceItem, InvestigationCase, InvestigationStatus
-from scoring.confidence import ConfidenceEngine
+from services.confidence_service import score_investigation
 from services.report_service import persist_investigation_report
 from websocket.investigation_ws import manager as ws_manager
 
@@ -110,11 +110,25 @@ class AgentOrchestrator:
                 triage_data=triage_data, timeline_data=timeline_data, threat_data=threat_data
             )
 
-            # 4. Assign Confidence Score
-            p_score = sum(ev.importance_score for ev in evidence) / max(len(evidence), 1) if evidence else 0.5
-            final_score, breakdown = ConfidenceEngine.calculate_score(0.8, 0.7, p_score, 0.6)
-            case.confidence_score = final_score
-            case.confidence_breakdown = breakdown
+            # 4. Confidence derived from what this investigation actually produced
+            memory_similarity = None
+            if getattr(memory_context, "top_similar_cases", None):
+                memory_similarity = memory_context.top_similar_cases[0].similarity_score
+            agent_statuses = {
+                "Triage Analyst": triage_data.get("status"),
+                "Forensic Timeline Analyst": timeline_data.get("status"),
+                "Threat Intel Analyst": threat_data.get("status"),
+                "SOC Lead": report_data.get("status"),
+            }
+            async with make_session() as scoring_session:
+                confidence = await score_investigation(
+                    scoring_session, case.id,
+                    severity=case.severity.value if case.severity else None,
+                    agent_statuses=agent_statuses,
+                    memory_top_similarity=memory_similarity,
+                )
+            case.confidence_score = confidence.score
+            case.confidence_breakdown = confidence.breakdown()
             await db.commit()
 
             # 5. Persist the canonical report (single source for API, UI and PDF)

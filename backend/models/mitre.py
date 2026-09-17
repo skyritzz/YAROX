@@ -14,7 +14,8 @@ class AttackTechnique(Base):
     technique_id = Column(String, nullable=False, index=True)
     technique_name = Column(String, nullable=False)
     tactic = Column(String, nullable=False, index=True)
-    confidence = Column(Float, nullable=False, default=1.0)
+    # 1.0 for deterministic rule matches; NULL for agent-proposed mappings (validated, not measured)
+    confidence = Column(Float, nullable=True)
     reason = Column(Text, nullable=True)
     
     case = relationship("InvestigationCase", back_populates="mitre_techniques")

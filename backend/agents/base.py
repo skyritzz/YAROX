@@ -11,6 +11,7 @@ from models.investigation import (
     AgentFindingEvidence,
 )
 from agents.evidence import validate_findings
+from services.confidence_service import acceptance_confidence, acceptance_explanation
 from services.llm_service import llm_service
 from websocket.investigation_ws import manager as ws_manager
 from core.utils import sanitize_evidence
@@ -128,6 +129,12 @@ class BaseAgent(ABC):
             for evidence_id in record.evidence_ids:
                 db.add(AgentFindingEvidence(finding_id=record.finding_id, evidence_item_id=evidence_id))
         await db.commit()
+
+        # Per-agent confidence is measured, not asserted: the share of what this agent
+        # proposed that survived evidence validation. Stored on the execution so
+        # finish_execution keeps it.
+        execution.confidence = acceptance_confidence(len(accepted), len(rejected))
+        execution.confidence_explanation = acceptance_explanation(len(accepted), len(rejected))
 
         accepted_dicts = [r.model_dump(mode="json") for r in accepted]
         cited = sorted({eid for r in accepted_dicts for eid in r["evidence_ids"]})

@@ -93,21 +93,21 @@ The "Restoration" column is updated as phases complete. `OPEN` = not yet address
 | L-1 | LLM service config | FAKE (config) | `LLMService(model="llama3.1", base_url="http://host.docker.internal:11434")` constructor defaults; `settings.OLLAMA_MODEL/OLLAMA_BASE_URL` never read | `services/llm_service.py` | Configuration silently ignored | Provider built from settings | **FIXED (Phase 2/8)** — provider abstraction (ollama/vllm/anthropic) built from settings; external providers require explicit opt-in |
 | L-2 | LLM failure handling | PARTIAL | Any exception → `print` + return `""`; no retry/backoff; no schema validation; agents `json.loads` raw text | `services/llm_service.py` `generate` | Transient failures become degraded agents | Phase 8 | **FIXED (Phase 8)** — schema-validated generation with retries, corrective feedback, typed errors and bounded concurrency |
 | L-3 | Agent pipeline | REAL | Live replay: Memory → Triage/Timeline/ThreatIntel (concurrent) → SOC Lead completed with real LLM output | `agents/orchestrator.py` | Core value | — | — |
-| L-4 | Agent execution confidence | FAKE | Hardcoded per agent: Timeline 0.9, ThreatIntel 0.85, SOC Lead 0.95, Memory 1.0 | `agents/*.py` `finish_execution(confidence=…)` | UI displays invented per-agent confidence | Derive or null | OPEN |
+| L-4 | Agent execution confidence | FAKE | Hardcoded per agent: Timeline 0.9, ThreatIntel 0.85, SOC Lead 0.95, Memory 1.0 | `agents/*.py` `finish_execution(confidence=…)` | UI displays invented per-agent confidence | Derive or null | **FIXED (Phase 9)** — per-agent confidence is the share of proposed findings that passed evidence validation; agents that propose nothing report NULL |
 | L-5 | Degraded fallback content | PARTIAL | SOC Lead fallback emits 3 generic recommendations as report content; marked `degraded` in execution status only | `agents/report.py` | Fallback text can be mistaken for analysis | Typed degraded result, no invented recommendations | **FIXED (Phase 3)** — degraded SOC Lead yields `executive_summary=null`, no recommendations, report status `degraded` |
 | L-6 | Triage guardrail | REAL | Prevents `LOW` when rule severity HIGH/CRITICAL (floors to MEDIUM) | `agents/triage.py` | Prompt-injection defense | Floor should be rule severity, not MEDIUM | **FIXED (Phase 3)** — floor is the deterministic rule severity (LLM cannot lower CRITICAL/HIGH at all) |
 | L-7 | Prompt sandboxing | REAL | `<untrusted_security_evidence>` tags + escape (spec says `<EVIDENCE_BOUNDARY>`) | `core/utils.py` | — | Fix docs | — |
 | T-1 | Tool calls | FAKE | Only "tool" is `memory_search`; `emit_step("tool_call_complete")` creates `AgentToolCall(duration_ms=content.get("duration_ms", 850.0))`; no duration ever supplied → 67/67 rows = 850 | `agents/base.py` `emit_step`, `agents/threat_intel.py` | Fabricated performance data in UI | Measured tool runner | **FIXED (Phase 2)** — `BaseAgent.run_tool` measures `perf_counter` duration, start/end, status, error; `emit_step` no longer fabricates tool calls |
-| T-2 | Execution metrics | FAKE (by omission) | `llm_execution_time_ms`, `tool_execution_time_ms`, `confidence_explanation` never written; UI renders `null/1000` as `0.00s` | `models/investigation.py` `AgentExecution`; `InvestigationExplorer.tsx` | UI shows 0.00s as if measured | Measure or display "Not available" | PARTIAL (Phase 2) — `llm_execution_time_ms` and `tool_execution_time_ms` measured; `confidence_explanation` still never written (Phase 9) |
+| T-2 | Execution metrics | FAKE (by omission) | `llm_execution_time_ms`, `tool_execution_time_ms`, `confidence_explanation` never written; UI renders `null/1000` as `0.00s` | `models/investigation.py` `AgentExecution`; `InvestigationExplorer.tsx` | UI shows 0.00s as if measured | Measure or display "Not available" | **FIXED (Phase 2/9)** — LLM and tool time measured; `confidence_explanation` now carries the acceptance basis and counts |
 | V-1 | `evidence_ids` | MISSING | `emit_step(evidence_ids=None)` everywhere; not stored in `AgentReasoningStep`; WS replay hardcodes `[]` | `agents/base.py`, `websocket/investigation_ws.py` | No finding is traceable to evidence | Finding contract with validated evidence IDs | **FIXED (Phase 3)** — `agent_findings` + `agent_finding_evidence` (FK to evidence_items); citations validated; `agent_reasoning_steps.evidence_ids` persisted and streamed |
 | V-2 | `EvidenceItem.related_agent` | MISSING | Never set → Explorer "Evidence" tab always empty | `api/investigations.py` `get_investigation_execution` | Empty UI tab | Use finding→evidence links | **FIXED (Phase 3)** — execution evidence derived from that execution's findings |
 | R-1 | Report persistence | MISSING | SOC Lead JSON only lives inside `agent_reasoning_steps.content`; UI scrapes `decision_made` step; PDF uses `case.description` | `agents/report.py`, `app/reports/page.tsx` | Two sources of truth that disagree | `investigation_reports` table; UI+PDF read it | **FIXED (Phase 3)** — `investigation_reports` (versioned, `is_current`); `/report`, `/reports`, `/findings`, `/export` and UI read it |
 | M-1 | MITRE validation | BROKEN | `validate()` strips sub-technique (`T1059.001`→`T1059`); KB has ~12 entries | `security/mitre/knowledge_base.py` | Sub-techniques lost | Exact-ID lookup, parent fallback for name only | **FIXED (Phase 2)** — exact-ID validation; KB expanded to 31 entries; unknown sub-techniques recorded at parent with explicit reason |
-| S-1 | Confidence score | FAKE | `ConfidenceEngine.calculate_score(0.8, 0.7, p_score, 0.6)` — 3 of 4 inputs constants; 68/81 cases = 0.75 | `agents/orchestrator.py`, `scoring/confidence.py` | Headline number is fiction | Phase 9 derived formula | OPEN |
+| S-1 | Confidence score | FAKE | `ConfidenceEngine.calculate_score(0.8, 0.7, p_score, 0.6)` — 3 of 4 inputs constants; 68/81 cases = 0.75 | `agents/orchestrator.py`, `scoring/confidence.py` | Headline number is fiction | Phase 9 derived formula | **FIXED (Phase 9)** — six measured components with weights, values, details and contributions stored in `confidence_breakdown` |
 | L-7b | Evidence truncation in prompts | BROKEN | `sanitize_evidence(max_length=2000)` truncated the serialized evidence list mid-item, silently dropping later evidence (and, after Phase 3, their IDs) from every agent prompt | `core/utils.py`, all agents | Agents analyzed a subset of evidence without knowing | Per-field clipping, max 40 items (earliest first) with explicit `omitted_item_count`, 20k block budget | **FIXED (Phase 3/8)** — per-field clipping plus explicit `num_ctx` so the model server no longer silently truncates long prompts |
 | L-8 | Threat Intel degraded fallback | FAKE | On failure returned `historical_insight: "No prior matching incidents in verified investigation memory."` — a claim about a search that may not have run | `agents/threat_intel.py` | False negative presented as fact | `historical_insight=null`; statement only when memory search actually returned no results | **FIXED (Phase 3)** |
 | L-9 | Local LLM capacity under concurrent agents | BROKEN | Live run 19:05: Triage, Timeline and Threat Intel all hit the 120 s timeout in both (duplicate) investigations — 6 concurrent `llama3.1` requests to one local Ollama with evidence-contract prompts | `agents/orchestrator.py`, `services/llm_service.py` | Analytic agents degrade under real load | Phase 5 (no duplicate runs) + Phase 8 (bounded LLM concurrency, context size, retries/backoff) | **FIXED (Phase 5/8)** — duplicate runs removed and LLM concurrency bounded (`LLM_MAX_CONCURRENCY=2`); all agents completed in the live runs after both changes |
-| S-2 | ATT&CK technique confidence | FAKE | `AttackTechnique.confidence` hardcoded: 0.8 (detection), 0.9 (threat intel) | `detection/engine.py`, `agents/threat_intel.py` | Invented per-technique confidence | Phase 9 | OPEN |
+| S-2 | ATT&CK technique confidence | FAKE | `AttackTechnique.confidence` hardcoded: 0.8 (detection), 0.9 (threat intel) | `detection/engine.py`, `agents/threat_intel.py` | Invented per-technique confidence | Phase 9 | **FIXED (Phase 9)** — 1.0 for deterministic rule matches, NULL for agent-proposed mappings (column made nullable) |
 
 ## 6. Memory
 
@@ -421,3 +421,40 @@ Entries are appended per phase with evidence.
 **Remaining**
 - Retry/validation behaviour on *other* models (only `llama3.1` exercised).
 - vLLM and Anthropic providers are implemented and unit-tested but have not been run against a live endpoint.
+
+### Phase 9 — Real confidence scoring (2026-09-18)
+
+**Formula** (documented in `scoring/confidence.py`; weights sum to 1.0):
+
+| Component | Weight | Derived from |
+|---|---|---|
+| rule_severity | 0.30 | severity of the deterministic detection that opened the case |
+| agent_completion | 0.20 | agents that completed vs degraded |
+| evidence_coverage | 0.20 | evidence items actually cited by findings / total evidence |
+| corroboration | 0.15 | distinct source events (saturating at 3) and distinct telemetry sources (at 2) |
+| memory_support | 0.10 | similarity of the closest verified historical case, 0 when none |
+| evidence_integrity | 0.05 | evidence whose source event hash verifies (`core/integrity.py`) |
+
+**Changed**
+- `scoring/confidence.py`: pure, deterministic `calculate_confidence(ConfidenceInputs)` returning a score plus a component breakdown (value, weight, contribution, human-readable detail). The old signature took four floats, three of which callers hardcoded.
+- `services/confidence_service.py`: collects inputs from persisted state (evidence rows, their source events and verified hashes, finding citations, agent outcomes, this run's memory result).
+- `agents/orchestrator.py`: scores after the agents run, stores score and breakdown on the case (and thus in the report).
+- Per-agent confidence: `acceptance_confidence()` = accepted / (accepted + rejected) findings, with `confidence_explanation` carrying the counts; agents that propose no findings (Memory Agent) store NULL instead of an invented number (previously 0.9 / 0.85 / 0.95 / 1.0).
+- `AttackTechnique.confidence`: 1.0 for deterministic rule matches, NULL for agent-proposed mappings (migration `e5f6a7b8c9d0` makes the column nullable); previously constants 0.8 and 0.9.
+
+**Tests** (`tests/test_confidence.py`, 15)
+- weights sum to 1; best case = 1.0, empty case = 0.0; deterministic
+- breakdown contributions sum exactly to the score, every component has a detail
+- score varies across inputs (the old engine returned 0.75 for 68 of 81 cases)
+- degraded agents reduce the score by exactly the expected share; uncited evidence lowers coverage; severity, memory and integrity components each move the score in the right direction
+- per-agent acceptance confidence including the "proposed nothing → None" case
+- integration against a real investigation: inputs collected from the database, breakdown stored on the case matches the report, score ≠ 0.75, triage confidence 0.5 (1 of 2 findings survived, the fabricated citation was rejected), Memory Agent confidence NULL
+- Full suite: **207 passed**.
+
+**Verified on the running system**
+- Live replay produced case `de628c59` with confidence **0.78** and this stored breakdown: rule_severity 0.75 (HIGH) → 0.225, agent_completion 1.0 (4/4) → 0.2, evidence_coverage 0.5 (1/2 cited) → 0.1, corroboration 0.767 (2 events, 2 sources) → 0.115, memory_support 0.899 (real historical match) → 0.09, evidence_integrity 1.0 (2/2 hashes verified) → 0.05.
+- Agent executions carried measured confidence with accepted/rejected counts; the Memory Agent stored NULL.
+- The startup schema guard fired for real during this phase: after the migration file was added but before it was applied, the backend refused to start with "Database schema not ready … Run `python -m scripts.migrate`" instead of serving against a stale schema.
+
+**Remaining**
+- `evidence_coverage` currently shows 0.5 on live runs because agents cite the most relevant evidence rather than every item; that is a real signal, not a defect, but it means scores rarely approach 1.0.

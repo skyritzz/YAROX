@@ -76,7 +76,11 @@ class MemoryAgent(BaseAgent):
                     "top_score": 0.0
                 })
 
-                await self.finish_execution(db, execution, status="completed", confidence=1.0)
+                execution.confidence_explanation = {
+                    "basis": "memory retrieval (no findings are produced by this agent)",
+                    "similar_cases_returned": 0,
+                }
+                await self.finish_execution(db, execution, status="completed")
                 return empty_context
 
             # Build Memory Context for verified historical cases
@@ -123,12 +127,18 @@ class MemoryAgent(BaseAgent):
                 "top_score": round(context.confidence_score, 2)
             })
 
-            await self.finish_execution(db, execution, status="completed", confidence=1.0)
+            execution.confidence_explanation = {
+                "basis": "memory retrieval (no findings are produced by this agent)",
+                "similar_cases_returned": len(similar_cases),
+                "top_similarity": round(context.confidence_score, 4),
+            }
+            await self.finish_execution(db, execution, status="completed")
             return context
 
         except Exception as e:
             await self.emit_step(db, execution, "step_failed", {
                 "text": f"Failed to retrieve memory context: {str(e)}"
             })
-            await self.finish_execution(db, execution, status="failed", confidence=0.0)
+            execution.confidence_explanation = {"basis": "memory retrieval failed", "error": str(e)}
+            await self.finish_execution(db, execution, status="failed")
             return MemoryContext()

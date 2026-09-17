@@ -272,7 +272,9 @@ async def test_unreviewed_investigation_not_indexed():
                         with patch.object(orch.threat_intel, "analyze", return_value={"mitre_mapping": []}):
                             with patch.object(orch.report, "analyze", return_value={"executive_summary": "Report"}), \
                                  patch("agents.orchestrator.persist_investigation_report", new_callable=AsyncMock,
-                                       return_value=MagicMock(id=uuid.uuid4(), version=1, status="complete")):
+                                       return_value=MagicMock(id=uuid.uuid4(), version=1, status="complete")), \
+                                 patch("agents.orchestrator.score_investigation", new_callable=AsyncMock,
+                                       return_value=MagicMock(score=0.5, breakdown=lambda: [])):
                                 await orch.run_investigation(mock_db, str(case.id))
                                 
                                 mock_delay.assert_not_called()

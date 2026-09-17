@@ -156,7 +156,9 @@ Return ONLY valid JSON."""
                         technique_id=tech_id,
                         technique_name=mapping.get("technique_name"),
                         tactic=mapping.get("tactic"),
-                        confidence=0.9,
+                        # Agent-proposed mapping: validated against the ATT&CK knowledge base
+                        # and evidence-cited, but not a deterministic match
+                        confidence=None,
                         reason=mapping.get("reason")
                     ))
             await db.commit()
