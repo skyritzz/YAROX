@@ -24,6 +24,26 @@ class Settings(BaseSettings):
     MEMORY_MIN_SIMILARITY: float = 0.45
     OLLAMA_BASE_URL: str = "http://host.docker.internal:11434"
     OLLAMA_MODEL: str = "llama3.1"
+
+    # ---- LLM provider -------------------------------------------------------------
+    # Local inference is the default: security telemetry must not leave the deployment.
+    # External providers (anthropic) require LLM_ALLOW_EXTERNAL_PROVIDERS=true.
+    LLM_PROVIDER: str = "ollama"          # ollama | vllm | anthropic
+    LLM_MODEL: str = "llama3.1"
+    LLM_BASE_URL: str = ""                 # falls back to the provider-specific URL below
+    VLLM_BASE_URL: str = "http://vllm:8000"
+    ANTHROPIC_BASE_URL: str = "https://api.anthropic.com"
+    ANTHROPIC_API_KEY: str = ""
+    LLM_ALLOW_EXTERNAL_PROVIDERS: bool = False
+    LLM_TIMEOUT_SECONDS: float = 180.0
+    LLM_MAX_ATTEMPTS: int = 3
+    LLM_RETRY_BASE_DELAY_SECONDS: float = 1.0
+    LLM_RETRY_MAX_DELAY_SECONDS: float = 20.0
+    # A local model server handles few requests at a time; unbounded fan-out from the
+    # concurrent agent stage produced timeouts on the live stack.
+    LLM_MAX_CONCURRENCY: int = 2
+    # Prompts longer than the context window are silently truncated by the server
+    LLM_CONTEXT_TOKENS: int = 8192
     MINIO_URL: str = "http://minio:9000"
     HEALTH_PROBE_TIMEOUT_SECONDS: float = 3.0
     # Per-case investigation lock: TTL is refreshed while the investigation runs, and

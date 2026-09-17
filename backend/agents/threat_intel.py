@@ -9,11 +9,11 @@ from agents.evidence import (
     FINDINGS_FORMAT_INSTRUCTION,
     PROMPT_EVIDENCE_MAX_CHARS,
 )
-from services.llm_service import llm_service
 from memory.service import memory_service
 from memory.case_inputs import build_fingerprint, load_case_memory_inputs, semantic_text
 from security.mitre.knowledge_base import mitre_kb
 from core.utils import sanitize_evidence, build_sandboxed_agent_prompt
+from schemas.agent_outputs import ThreatIntelLLMOutput
 import json
 
 class ThreatIntelAgent(BaseAgent):
@@ -100,20 +100,11 @@ Return ONLY valid JSON."""
                 "text": "Correlating behavior with MITRE ATT&CK framework within sandboxed boundary."
             })
 
-            response_text = await self.call_llm_with_timeout(
-                llm_service.generate(full_prompt, "", json_format=True),
-                timeout_seconds=120,
-                execution=execution
+            result = await self.generate_structured(execution, full_prompt, ThreatIntelLLMOutput)
+
+            cited_mappings, rejected_mappings = validate_cited_entries(
+                [m.model_dump(mode="json") for m in result.mitre_mapping], allowed_ids, "technique_id"
             )
-
-            try:
-                result = json.loads(response_text)
-            except Exception:
-                raise Exception("LLM failed to return valid JSON MITRE mapping.")
-            if not isinstance(result, dict):
-                raise Exception("LLM MITRE mapping output is not a JSON object.")
-
-            cited_mappings, rejected_mappings = validate_cited_entries(result.get("mitre_mapping", []), allowed_ids, "technique_id")
 
             # Deterministic MITRE validation
             validated_mappings = []
@@ -145,7 +136,7 @@ Return ONLY valid JSON."""
 
             await self.emit_step(db, execution, "reasoning_complete", {
                 "text": f"Mapped {len(validated_mappings)} evidence-backed techniques; rejected {len(rejected_mappings)}.",
-                "raw": result,
+                "raw": result.model_dump(mode="json"),
                 "rejected_mappings": rejected_mappings,
             }, evidence_ids=sorted({eid for m in validated_mappings for eid in m["evidence_ids"]}))
 
@@ -170,10 +161,12 @@ Return ONLY valid JSON."""
                     ))
             await db.commit()
 
-            findings = await self.record_findings(db, execution, case.id, result.get("findings"), allowed_ids)
+            findings = await self.record_findings(
+                db, execution, case.id, [f.model_dump(mode="json") for f in result.findings], allowed_ids
+            )
 
             # Historical insight is only reported when memory actually returned matches
-            historical_insight = result.get("historical_insight") if similar_summaries and isinstance(result.get("historical_insight"), str) else None
+            historical_insight = result.historical_insight if similar_summaries else None
             memory_statement = historical_insight or (
                 "No similar cases were returned by the memory search." if not similar_cases else None
             )

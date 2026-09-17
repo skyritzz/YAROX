@@ -90,8 +90,8 @@ The "Restoration" column is updated as phases complete. `OPEN` = not yet address
 
 | ID | Component | Status | Evidence | File / Symbol | Why it matters | Proposed fix | Restoration |
 |---|---|---|---|---|---|---|---|
-| L-1 | LLM service config | FAKE (config) | `LLMService(model="llama3.1", base_url="http://host.docker.internal:11434")` constructor defaults; `settings.OLLAMA_MODEL/OLLAMA_BASE_URL` never read | `services/llm_service.py` | Configuration silently ignored | Provider built from settings | **FIXED (Phase 2)** — `LLMService` built from `settings.OLLAMA_MODEL/OLLAMA_BASE_URL`; provider abstraction remains Phase 8 |
-| L-2 | LLM failure handling | PARTIAL | Any exception → `print` + return `""`; no retry/backoff; no schema validation; agents `json.loads` raw text | `services/llm_service.py` `generate` | Transient failures become degraded agents | Phase 8 | OPEN |
+| L-1 | LLM service config | FAKE (config) | `LLMService(model="llama3.1", base_url="http://host.docker.internal:11434")` constructor defaults; `settings.OLLAMA_MODEL/OLLAMA_BASE_URL` never read | `services/llm_service.py` | Configuration silently ignored | Provider built from settings | **FIXED (Phase 2/8)** — provider abstraction (ollama/vllm/anthropic) built from settings; external providers require explicit opt-in |
+| L-2 | LLM failure handling | PARTIAL | Any exception → `print` + return `""`; no retry/backoff; no schema validation; agents `json.loads` raw text | `services/llm_service.py` `generate` | Transient failures become degraded agents | Phase 8 | **FIXED (Phase 8)** — schema-validated generation with retries, corrective feedback, typed errors and bounded concurrency |
 | L-3 | Agent pipeline | REAL | Live replay: Memory → Triage/Timeline/ThreatIntel (concurrent) → SOC Lead completed with real LLM output | `agents/orchestrator.py` | Core value | — | — |
 | L-4 | Agent execution confidence | FAKE | Hardcoded per agent: Timeline 0.9, ThreatIntel 0.85, SOC Lead 0.95, Memory 1.0 | `agents/*.py` `finish_execution(confidence=…)` | UI displays invented per-agent confidence | Derive or null | OPEN |
 | L-5 | Degraded fallback content | PARTIAL | SOC Lead fallback emits 3 generic recommendations as report content; marked `degraded` in execution status only | `agents/report.py` | Fallback text can be mistaken for analysis | Typed degraded result, no invented recommendations | **FIXED (Phase 3)** — degraded SOC Lead yields `executive_summary=null`, no recommendations, report status `degraded` |
@@ -104,9 +104,9 @@ The "Restoration" column is updated as phases complete. `OPEN` = not yet address
 | R-1 | Report persistence | MISSING | SOC Lead JSON only lives inside `agent_reasoning_steps.content`; UI scrapes `decision_made` step; PDF uses `case.description` | `agents/report.py`, `app/reports/page.tsx` | Two sources of truth that disagree | `investigation_reports` table; UI+PDF read it | **FIXED (Phase 3)** — `investigation_reports` (versioned, `is_current`); `/report`, `/reports`, `/findings`, `/export` and UI read it |
 | M-1 | MITRE validation | BROKEN | `validate()` strips sub-technique (`T1059.001`→`T1059`); KB has ~12 entries | `security/mitre/knowledge_base.py` | Sub-techniques lost | Exact-ID lookup, parent fallback for name only | **FIXED (Phase 2)** — exact-ID validation; KB expanded to 31 entries; unknown sub-techniques recorded at parent with explicit reason |
 | S-1 | Confidence score | FAKE | `ConfidenceEngine.calculate_score(0.8, 0.7, p_score, 0.6)` — 3 of 4 inputs constants; 68/81 cases = 0.75 | `agents/orchestrator.py`, `scoring/confidence.py` | Headline number is fiction | Phase 9 derived formula | OPEN |
-| L-7b | Evidence truncation in prompts | BROKEN | `sanitize_evidence(max_length=2000)` truncated the serialized evidence list mid-item, silently dropping later evidence (and, after Phase 3, their IDs) from every agent prompt | `core/utils.py`, all agents | Agents analyzed a subset of evidence without knowing | Per-field clipping, max 40 items (earliest first) with explicit `omitted_item_count`, 20k block budget | **FIXED (Phase 3)** |
+| L-7b | Evidence truncation in prompts | BROKEN | `sanitize_evidence(max_length=2000)` truncated the serialized evidence list mid-item, silently dropping later evidence (and, after Phase 3, their IDs) from every agent prompt | `core/utils.py`, all agents | Agents analyzed a subset of evidence without knowing | Per-field clipping, max 40 items (earliest first) with explicit `omitted_item_count`, 20k block budget | **FIXED (Phase 3/8)** — per-field clipping plus explicit `num_ctx` so the model server no longer silently truncates long prompts |
 | L-8 | Threat Intel degraded fallback | FAKE | On failure returned `historical_insight: "No prior matching incidents in verified investigation memory."` — a claim about a search that may not have run | `agents/threat_intel.py` | False negative presented as fact | `historical_insight=null`; statement only when memory search actually returned no results | **FIXED (Phase 3)** |
-| L-9 | Local LLM capacity under concurrent agents | BROKEN | Live run 19:05: Triage, Timeline and Threat Intel all hit the 120 s timeout in both (duplicate) investigations — 6 concurrent `llama3.1` requests to one local Ollama with evidence-contract prompts | `agents/orchestrator.py`, `services/llm_service.py` | Analytic agents degrade under real load | Phase 5 (no duplicate runs) + Phase 8 (bounded LLM concurrency, context size, retries/backoff) | PARTIAL (Phase 5) — removing duplicate runs halved concurrent LLM calls (6 → 3) and all agents completed in the 20:27 live run; bounded LLM concurrency/retries remain Phase 8 |
+| L-9 | Local LLM capacity under concurrent agents | BROKEN | Live run 19:05: Triage, Timeline and Threat Intel all hit the 120 s timeout in both (duplicate) investigations — 6 concurrent `llama3.1` requests to one local Ollama with evidence-contract prompts | `agents/orchestrator.py`, `services/llm_service.py` | Analytic agents degrade under real load | Phase 5 (no duplicate runs) + Phase 8 (bounded LLM concurrency, context size, retries/backoff) | **FIXED (Phase 5/8)** — duplicate runs removed and LLM concurrency bounded (`LLM_MAX_CONCURRENCY=2`); all agents completed in the live runs after both changes |
 | S-2 | ATT&CK technique confidence | FAKE | `AttackTechnique.confidence` hardcoded: 0.8 (detection), 0.9 (threat intel) | `detection/engine.py`, `agents/threat_intel.py` | Invented per-technique confidence | Phase 9 | OPEN |
 
 ## 6. Memory
@@ -392,3 +392,32 @@ Entries are appended per phase with evidence.
 **Remaining / newly discovered**
 - D-5: the `insider_threat` dataset triggers no detection rule at all.
 - Replay and the in-process event bus still die on API restart (E-1): a backend hot-reload during a replay silently dropped the remaining events.
+
+### Phase 8 — LLM provider abstraction and output validation (2026-09-18)
+
+**Changed**
+- `services/llm/providers.py`: `LLMProvider` interface with `OllamaProvider`, `VLLMProvider` (OpenAI-compatible) and `AnthropicProvider`. All configuration (model, base URL, credentials, timeout) comes from settings. Per section 11 of the architecture spec, external providers are refused unless `LLM_ALLOW_EXTERNAL_PROVIDERS=true`, and the Anthropic provider additionally requires an API key. `availability()` separates "unreachable" from "model not installed".
+- `services/llm/service.py`: `generate_structured(prompt, schema)` — bounded concurrency (semaphore), hard timeout, code-fence stripping, balanced-brace JSON extraction from surrounding prose, Pydantic validation, retries with exponential backoff **and the validation error fed back to the model**, and typed exhaustion errors (`LLMUnavailable` / `LLMInvalidOutput`). A caller never receives fabricated content.
+- `schemas/agent_outputs.py`: per-agent output schemas (structure strict, types permissive); semantic validation (evidence citations, MITRE IDs) stays in `agents/evidence.py`.
+- All four LLM agents now use validated generation; `services/llm_service.py` remains as the import path.
+- `core/health.py`: the LLM probe builds the provider from current settings and reports provider/model/endpoint plus concurrency and attempt limits.
+- Compose and `.env.example` carry the LLM settings; `LLM_MAX_CONCURRENCY=2` (a local model server serves few requests at a time — unbounded fan-out caused the L-9 timeouts).
+
+**Tests** (`tests/test_llm_service.py`, 23)
+- fence stripping and JSON extraction from prose, nested braces and braces inside strings
+- invalid JSON retried with the reason in the next prompt; schema violation retried with the field-level error; success on a later attempt
+- persistent invalid output raises `LLMInvalidOutput` after exactly 3 attempts (never returns content)
+- transport failure retried then `LLMUnavailable`; timeout converted to a typed error
+- concurrency never exceeds the configured limit
+- provider selection: local default, vLLM from settings, unknown provider rejected, external provider requires both opt-in and credentials, and this deployment is local-only
+- Full suite: **192 passed**.
+
+**Verified on the running system (real Ollama)**
+- `/health`: `provider 'ollama' model 'llama3.1' at http://host.docker.internal:11434 available; max 2 concurrent, 3 attempts`.
+- Live replay `apt29_simulation`: all 5 agents completed in both passes (LLM time per agent 34-111 s); reports v2 and v3 `complete` with 9-11 findings and 2-3 recommendations, timeline from the agent.
+- Worker log shows `LLM attempt 1/3 returned invalid JSON` followed by a successful retry — a real malformed model response that previously would have degraded the agent.
+- Lock behaviour observed across worker processes: two workers logged `skipped: investigation already running for this case` while one ran.
+
+**Remaining**
+- Retry/validation behaviour on *other* models (only `llama3.1` exercised).
+- vLLM and Anthropic providers are implemented and unit-tested but have not been run against a live endpoint.

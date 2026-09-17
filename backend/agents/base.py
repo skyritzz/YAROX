@@ -11,6 +11,7 @@ from models.investigation import (
     AgentFindingEvidence,
 )
 from agents.evidence import validate_findings
+from services.llm_service import llm_service
 from websocket.investigation_ws import manager as ws_manager
 from core.utils import sanitize_evidence
 import json
@@ -201,6 +202,27 @@ class BaseAgent(ABC):
         if error is not None:
             raise error
         return result
+
+    async def generate_structured(
+        self,
+        execution: AgentExecution,
+        prompt: str,
+        schema,
+    ):
+        """
+        Runs a validated LLM generation for this agent.
+
+        The LLM service strips code fences, validates against ``schema`` and retries with
+        the validation error fed back to the model. Errors are typed (LLMUnavailable /
+        LLMInvalidOutput) and propagate: a caller never receives fabricated content.
+        The measured wall-clock time is added to the execution.
+        """
+        start = time.perf_counter()
+        try:
+            return await llm_service.generate_structured(prompt, schema)
+        finally:
+            elapsed_ms = (time.perf_counter() - start) * 1000.0
+            execution.llm_execution_time_ms = (execution.llm_execution_time_ms or 0.0) + elapsed_ms
 
     async def call_llm_with_timeout(self, coroutine, timeout_seconds: int = 120, execution: Optional[AgentExecution] = None):
         """

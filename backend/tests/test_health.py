@@ -92,7 +92,7 @@ async def test_health_marks_event_bus_down_when_not_started():
 
 @pytest.mark.asyncio
 async def test_health_llm_unreachable_is_reported_but_not_fatal(running_event_bus):
-    with patch.object(settings, "OLLAMA_BASE_URL", "http://127.0.0.1:1"):
+    with patch.object(settings, "LLM_BASE_URL", "http://127.0.0.1:1"):
         res = await _get_health()
     body = res.json()
     assert body["components"]["llm"]["status"] == "down"
@@ -104,10 +104,11 @@ async def test_health_llm_unreachable_is_reported_but_not_fatal(running_event_bu
 
 @pytest.mark.asyncio
 async def test_health_llm_missing_model_is_degraded(running_event_bus):
-    with patch.object(settings, "OLLAMA_MODEL", "yarox-model-that-does-not-exist"):
+    with patch.object(settings, "LLM_MODEL", "yarox-model-that-does-not-exist"):
         res = await _get_health()
     llm = res.json()["components"]["llm"]
     # Either Ollama is unreachable from this environment (down) or it reports the model missing
     assert llm["status"] in ("degraded", "down")
     if llm["status"] == "degraded":
-        assert "not installed" in llm["detail"]
+        assert "is not installed" in llm["detail"]
+        assert "yarox-model-that-does-not-exist" in llm["detail"]

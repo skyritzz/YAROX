@@ -7,9 +7,8 @@ from agents.evidence import (
     FINDINGS_FORMAT_INSTRUCTION,
     PROMPT_EVIDENCE_MAX_CHARS,
 )
-from services.llm_service import llm_service
 from core.utils import sanitize_evidence, build_sandboxed_agent_prompt
-import json
+from schemas.agent_outputs import TimelineLLMOutput
 
 class TimelineAgent(BaseAgent):
     def __init__(self):
@@ -54,20 +53,11 @@ Return ONLY valid JSON. Do not invent events not present in the evidence."""
                 "text": "Extracting temporal relationships and chronological order within sandboxed boundary."
             })
 
-            response_text = await self.call_llm_with_timeout(
-                llm_service.generate(full_prompt, "", json_format=True),
-                timeout_seconds=120,
-                execution=execution
+            result = await self.generate_structured(execution, full_prompt, TimelineLLMOutput)
+
+            timeline, rejected_entries = validate_cited_entries(
+                [entry.model_dump(mode="json") for entry in result.timeline], allowed_ids, "action"
             )
-
-            try:
-                result = json.loads(response_text)
-            except Exception:
-                raise Exception("LLM failed to return valid JSON timeline.")
-            if not isinstance(result, dict) or not isinstance(result.get("timeline"), list):
-                raise Exception("Invalid timeline JSON structure.")
-
-            timeline, rejected_entries = validate_cited_entries(result["timeline"], allowed_ids, "action")
             if evidence and not timeline:
                 raise Exception(
                     f"No timeline entry cited evidence from this investigation ({len(rejected_entries)} rejected)."
@@ -75,11 +65,13 @@ Return ONLY valid JSON. Do not invent events not present in the evidence."""
 
             await self.emit_step(db, execution, "reasoning_complete", {
                 "text": f"Timeline reconstructed with {len(timeline)} evidence-backed events; rejected {len(rejected_entries)}.",
-                "raw": result,
+                "raw": result.model_dump(mode="json"),
                 "rejected_timeline_entries": rejected_entries,
             }, evidence_ids=sorted({eid for t in timeline for eid in t["evidence_ids"]}))
 
-            findings = await self.record_findings(db, execution, case.id, result.get("findings"), allowed_ids)
+            findings = await self.record_findings(
+                db, execution, case.id, [f.model_dump(mode="json") for f in result.findings], allowed_ids
+            )
 
             # Decision
             await self.emit_step(db, execution, "decision_made", {

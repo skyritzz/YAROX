@@ -2,9 +2,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from models.investigation import InvestigationCase, Severity
 from agents.base import BaseAgent
 from agents.evidence import evidence_for_prompt, FINDINGS_FORMAT_INSTRUCTION, PROMPT_EVIDENCE_MAX_CHARS
-from services.llm_service import llm_service
 from core.utils import sanitize_evidence, build_sandboxed_agent_prompt
-import json
+from schemas.agent_outputs import TriageLLMOutput
 
 SEVERITY_RANK = {"LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
 
@@ -51,28 +50,14 @@ Return ONLY valid JSON."""
                 "text": "Analyzing detection severity and formulating summary within sandboxed boundary."
             })
 
-            response_text = await self.call_llm_with_timeout(
-                llm_service.generate(full_prompt, "", json_format=True),
-                timeout_seconds=120,
-                execution=execution
-            )
-
-            try:
-                result = json.loads(response_text)
-            except Exception:
-                raise Exception("LLM failed to return valid JSON.")
-            if not isinstance(result, dict):
-                raise Exception("LLM triage output is not a JSON object.")
+            result = await self.generate_structured(execution, full_prompt, TriageLLMOutput)
 
             # Priority 7: Deterministic Security Guardrails
-            proposed_severity = str(result.get("severity", "MEDIUM")).upper()
+            proposed_severity = str(result.severity).upper()
             if proposed_severity not in SEVERITY_RANK:
                 proposed_severity = "MEDIUM"
 
-            try:
-                priority_score = max(0.0, min(1.0, float(result.get("priority_score", 0.5))))
-            except (TypeError, ValueError):
-                priority_score = None
+            priority_score = None if result.priority_score is None else max(0.0, min(1.0, float(result.priority_score)))
 
             # Guardrail: the deterministic rule severity is a floor the LLM cannot lower
             guardrail = None
@@ -80,20 +65,22 @@ Return ONLY valid JSON."""
                 guardrail = f"Prevented downgrade from deterministic {deterministic_severity} to {proposed_severity}"
                 proposed_severity = deterministic_severity
 
-            summary = result.get("summary") if isinstance(result.get("summary"), str) else None
+            summary = result.summary
 
             await self.emit_step(db, execution, "reasoning_complete", {
                 "text": "Triage analysis complete with guardrails verified.",
-                "raw": result
+                "raw": result.model_dump(mode="json")
             })
 
-            findings = await self.record_findings(db, execution, case.id, result.get("findings"), allowed_ids)
+            findings = await self.record_findings(
+                db, execution, case.id, [f.model_dump(mode="json") for f in result.findings], allowed_ids
+            )
 
             triage = {
                 "status": "completed",
                 "execution_id": str(execution.id),
                 "severity": proposed_severity,
-                "proposed_severity": str(result.get("severity", "")).upper() or None,
+                "proposed_severity": str(result.severity).upper() or None,
                 "summary": summary,
                 "priority_score": priority_score,
                 "guardrail_applied": guardrail,

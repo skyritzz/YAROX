@@ -87,15 +87,19 @@ async def probe_minio() -> ProbeResult:
 
 
 async def probe_llm() -> ProbeResult:
-    async with httpx.AsyncClient(timeout=2.5) as client:
-        response = await client.get(f"{settings.OLLAMA_BASE_URL.rstrip('/')}/api/tags")
-    response.raise_for_status()
-    names = {m.get("name", "") for m in response.json().get("models", [])}
-    model = settings.OLLAMA_MODEL
-    available = model in names or (":" not in model and f"{model}:latest" in names)
-    if not available:
-        return DEGRADED, f"Ollama reachable; configured model '{model}' is not installed"
-    return UP, f"Ollama reachable; model '{model}' installed"
+    from services.llm_service import build_provider, llm_service
+
+    # Build from current settings so the probe reflects configuration, not a cached provider
+    provider = build_provider(settings)
+    info = llm_service.describe()
+    info.update(provider.describe())
+    status = await provider.availability()
+    description = f"provider '{info['provider']}' model '{info['model']}' at {info['base_url']}"
+    if not status.reachable:
+        return DOWN, f"{description} is not reachable ({status.detail})"
+    if not status.model_present:
+        return DEGRADED, f"{description} reachable but {status.detail}"
+    return UP, f"{description} available; max {info['max_concurrency']} concurrent, {info['max_attempts']} attempts"
 
 
 async def probe_celery_worker() -> ProbeResult:

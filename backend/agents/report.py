@@ -7,9 +7,8 @@ from agents.evidence import (
     FINDINGS_FORMAT_INSTRUCTION,
     PROMPT_EVIDENCE_MAX_CHARS,
 )
-from services.llm_service import llm_service
 from core.utils import sanitize_evidence, build_sandboxed_agent_prompt
-import json
+from schemas.agent_outputs import ReportLLMOutput
 
 class ReportAgent(BaseAgent):
     def __init__(self):
@@ -82,29 +81,22 @@ Return ONLY valid JSON."""
                 "text": "Drafting executive summary and formulating remediation recommendations within sandboxed boundary."
             })
 
-            response_text = await self.call_llm_with_timeout(
-                llm_service.generate(full_prompt, "", json_format=True),
-                timeout_seconds=120,
-                execution=execution
+            result = await self.generate_structured(execution, full_prompt, ReportLLMOutput)
+            summary = result.executive_summary
+
+            recommendations, rejected_recommendations = validate_cited_entries(
+                [r.model_dump(mode="json") for r in result.recommendations], allowed_ids, "action"
             )
-
-            try:
-                result = json.loads(response_text)
-            except Exception:
-                raise Exception("LLM failed to return valid JSON report.")
-            summary = result.get("executive_summary") if isinstance(result, dict) else None
-            if not isinstance(summary, str) or not summary.strip():
-                raise Exception("Invalid report JSON structure: missing executive_summary.")
-
-            recommendations, rejected_recommendations = validate_cited_entries(result.get("recommendations"), allowed_ids, "action")
 
             await self.emit_step(db, execution, "reasoning_complete", {
                 "text": f"Report drafted with {len(recommendations)} evidence-backed recommendations; rejected {len(rejected_recommendations)}.",
-                "raw": result,
+                "raw": result.model_dump(mode="json"),
                 "rejected_recommendations": rejected_recommendations,
             }, evidence_ids=sorted({eid for r in recommendations for eid in r["evidence_ids"]}))
 
-            findings = await self.record_findings(db, execution, case.id, result.get("findings"), allowed_ids)
+            findings = await self.record_findings(
+                db, execution, case.id, [f.model_dump(mode="json") for f in result.findings], allowed_ids
+            )
 
             # Decision
             await self.emit_step(db, execution, "decision_made", {
