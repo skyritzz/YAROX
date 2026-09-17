@@ -1,16 +1,25 @@
+import asyncio
+import logging
+
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
-from models.investigation import InvestigationCase, EvidenceItem, InvestigationStatus
-from agents.triage import TriageAgent
-from agents.timeline import TimelineAgent
-from agents.threat_intel import ThreatIntelAgent
-from agents.report import ReportAgent
+
 from agents.memory import MemoryAgent
-from websocket.investigation_ws import manager as ws_manager
+from agents.report import ReportAgent
+from agents.threat_intel import ThreatIntelAgent
+from agents.timeline import TimelineAgent
+from agents.triage import TriageAgent
+from core.case_state import INVESTIGATABLE_STATES, validate_transition
+from core.config import settings
+from core.locks import consume_rerun_request, investigation_lock, request_rerun
+from models.investigation import EvidenceItem, InvestigationCase, InvestigationStatus
 from scoring.confidence import ConfidenceEngine
 from services.report_service import persist_investigation_report
-import traceback
+from websocket.investigation_ws import manager as ws_manager
+
+logger = logging.getLogger("yarox.orchestrator")
+
 
 class AgentOrchestrator:
     def __init__(self):
@@ -20,23 +29,51 @@ class AgentOrchestrator:
         self.threat_intel = ThreatIntelAgent()
         self.report = ReportAgent()
 
-    async def run_investigation(self, db: AsyncSession, case_id: str):
+    async def run_investigation(self, db: AsyncSession, case_id: str) -> dict:
+        """
+        Runs the investigation DAG for a case under a per-case distributed lock.
+
+        Only one investigation may run per case at a time. A second attempt does not
+        queue behind the first: it records a re-run request, which the holder performs
+        after it finishes, so evidence that arrives mid-investigation is still analyzed.
+        """
+        async with investigation_lock(case_id) as acquired:
+            if not acquired:
+                await request_rerun(case_id)
+                logger.info("Investigation for case %s already running; re-run requested", case_id)
+                return {"status": "skipped", "reason": "investigation already running for this case"}
+
+            outcome = await self._run_locked(db, case_id)
+            passes = 0
+            while await consume_rerun_request(case_id) and passes < settings.INVESTIGATION_MAX_RERUNS:
+                passes += 1
+                logger.info("Re-running investigation for case %s (evidence arrived during pass %d)", case_id, passes)
+                outcome = await self._run_locked(db, case_id)
+            return outcome
+
+    async def _run_locked(self, db: AsyncSession, case_id: str) -> dict:
+        from database.session import AsyncSessionLocal
+
         result = await db.execute(select(InvestigationCase).where(InvestigationCase.id == case_id))
         case = result.scalar_one_or_none()
         if not case:
-            return
+            return {"status": "skipped", "reason": "investigation not found"}
 
-        case.status = InvestigationStatus.ANALYZING
-        await db.commit()
+        if case.status not in INVESTIGATABLE_STATES:
+            logger.info("Case %s is %s; not investigating a closed case", case_id, case.status.value)
+            return {"status": "skipped", "reason": f"case status is {case.status.value}"}
+
+        previous_status = case.status
+        if case.status != InvestigationStatus.ANALYZING:
+            validate_transition(case.status, InvestigationStatus.ANALYZING)
+            case.status = InvestigationStatus.ANALYZING
+            await db.commit()
         await ws_manager.broadcast({"event": "AGENT_STARTED", "event_type": "AGENT_STARTED", "case_id": str(case_id), "investigation_id": str(case_id), "agent": "Orchestrator"})
 
         ev_result = await db.execute(select(EvidenceItem).where(EvidenceItem.case_id == case_id))
         evidence = ev_result.scalars().all()
 
         try:
-            import asyncio
-            from database.session import AsyncSessionLocal
-            
             async def run_agent(agent, c_id, **kwargs):
                 async with AsyncSessionLocal() as session:
                     c_res = await session.execute(
@@ -52,14 +89,14 @@ class AgentOrchestrator:
 
             # 1. Run Memory Agent First
             memory_context = await run_agent(self.memory, case.id)
-            
+
             # 2. Run Triage, Timeline, and Threat Intel concurrently
             triage_task = asyncio.create_task(run_agent(self.triage, case.id, memory_context=memory_context))
             timeline_task = asyncio.create_task(run_agent(self.timeline, case.id, memory_context=memory_context))
             threat_task = asyncio.create_task(run_agent(self.threat_intel, case.id, memory_context=memory_context))
-            
+
             triage_data, timeline_data, threat_data = await asyncio.gather(triage_task, timeline_task, threat_task)
-            
+
             # 3. Report Generation
             report_data = await run_agent(
                 self.report, case.id,
@@ -80,6 +117,7 @@ class AgentOrchestrator:
                 )
 
             # Priority 9: Case moves to WAITING_FOR_REVIEW. Memory indexing is human-gated upon RESOLVED status.
+            validate_transition(case.status, InvestigationStatus.WAITING_FOR_REVIEW)
             case.status = InvestigationStatus.WAITING_FOR_REVIEW
             await db.commit()
 
@@ -88,11 +126,18 @@ class AgentOrchestrator:
                 "case_id": str(case_id), "investigation_id": str(case_id),
                 "report_id": str(report.id), "report_version": report.version, "report_status": report.status,
             })
-            
+            return {"status": "completed", "report_id": str(report.id), "report_status": report.status}
+
         except Exception as e:
-            print(f"Orchestrator failed: {e}")
-            traceback.print_exc()
-            case.status = InvestigationStatus.OPEN
+            logger.exception("Orchestrator failed for case %s: %s", case_id, e)
+            # Return the case to the queue so the failure is visible and the case can be retried
+            case.status = InvestigationStatus.OPEN if previous_status != InvestigationStatus.WAITING_FOR_REVIEW else previous_status
             await db.commit()
-            
+            await ws_manager.broadcast({
+                "event": "INVESTIGATION_FAILED", "event_type": "INVESTIGATION_FAILED",
+                "case_id": str(case_id), "investigation_id": str(case_id), "error": str(e),
+            })
+            return {"status": "failed", "error": str(e)}
+
+
 orchestrator = AgentOrchestrator()

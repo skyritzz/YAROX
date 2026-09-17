@@ -3,7 +3,7 @@ from core.events import event_bus
 from database.session import AsyncSessionLocal
 from models.event import Event
 from detection.engine import detection_engine
-from agents.orchestrator import orchestrator
+from services.investigation_runner import run_investigation_in_background
 from typing import Dict, Any
 
 async def handle_event_stored(data: Dict[str, Any]):
@@ -17,10 +17,10 @@ async def handle_event_stored(data: Dict[str, Any]):
             if event:
                 case = await detection_engine.process_event(session, event)
                 if case:
-                    async def _run_bg(cid: str):
-                        async with AsyncSessionLocal() as bg_session:
-                            await orchestrator.run_investigation(bg_session, cid)
-                    asyncio.create_task(_run_bg(str(case.id)))
+                    # The runner owns its own session and takes the per-case lock; a second
+                    # detection for a case already under investigation records a re-run request
+                    # instead of starting a duplicate run.
+                    asyncio.create_task(run_investigation_in_background(str(case.id)))
         except Exception as e:
             print(f"Error in detection consumer: {e}")
 

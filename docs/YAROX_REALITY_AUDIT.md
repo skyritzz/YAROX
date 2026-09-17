@@ -59,8 +59,8 @@ The "Restoration" column is updated as phases complete. `OPEN` = not yet address
 |---|---|---|---|---|---|---|---|
 | H-1 | `/health` | FAKE | Returns literal `"Healthy"` strings, no probes | `api/main.py` `health_check` | Operators cannot detect outages; frontend Infrastructure panel is fiction | Probe Postgres, Redis, Qdrant, MinIO, Ollama with timeouts; component status + overall | **FIXED (Phase 2)** — `core/health.py` live probes; 503 when required component down |
 | A-1 | Route prefix | REAL (doc mismatch) | Routes are `/events/ingest`, `/investigations`, no `/api/v1` | `api/main.py` | Docs untruthful | Fix docs (prefix change is a breaking change; defer) | OPEN |
-| A-2 | `POST /investigations/{id}/analyze` | BROKEN (unsafe) | Passes request-scoped `db` into `background_tasks.add_task(orchestrator.run_investigation, db, …)` | `api/investigations.py` `analyze_investigation` | Session lifetime owned by request; unsafe across tasks | Background task owns its own session; later Celery | OPEN |
-| A-3 | `PATCH /investigations/{id}/status` | BROKEN | Accepts any enum value from any state, incl. `ANALYZING`, `WAITING_FOR_REVIEW` | `api/investigations.py` `update_investigation_status` | Analysts can fake analysis state; bypass review gate | Explicit transition table; 409 on invalid | OPEN |
+| A-2 | `POST /investigations/{id}/analyze` | BROKEN (unsafe) | Passes request-scoped `db` into `background_tasks.add_task(orchestrator.run_investigation, db, …)` | `api/investigations.py` `analyze_investigation` | Session lifetime owned by request; unsafe across tasks | Background task owns its own session; later Celery | **FIXED (Phase 5)** — `services/investigation_runner.py` owns its session; the request session is never passed to a background task |
+| A-3 | `PATCH /investigations/{id}/status` | BROKEN | Accepts any enum value from any state, incl. `ANALYZING`, `WAITING_FOR_REVIEW` | `api/investigations.py` `update_investigation_status` | Analysts can fake analysis state; bypass review gate | Explicit transition table; 409 on invalid | **FIXED (Phase 5)** — `core/case_state.py` transition table; invalid transitions return 409 and write no audit entry |
 | A-4 | Export PDF | PARTIAL | PDF "Executive Summary" is `case.description` (rule text), not SOC Lead output; frontend calls it via `window.open` without auth header → 401 | `export/report_generator.py`, `app/investigations/[id]/page.tsx` `handleExport` | Report and UI disagree; export button broken for authenticated API | Generate from persisted report; fetch with auth and download blob | **FIXED (Phase 3)** — PDF rendered from persisted `InvestigationReport`; frontend downloads via authenticated blob request |
 | A-5 | Entity graph API | PARTIAL | Returns all entities/relationships globally, no per-case filter, entities deduped by name only | `api/investigations.py` `get_entity_graph` | Graph mixes unrelated cases | Per-case graph from evidence | OPEN |
 | A-6 | Case management (notes/assign/severity/reopen/audit) | REAL | Tests pass; audit rows written | `api/investigations.py` | — | Add transition validation | — |
@@ -81,7 +81,7 @@ The "Restoration" column is updated as phases complete. `OPEN` = not yet address
 | D-3 | Sigma engine | PARTIAL | One YAML rule; only `contains`/`exact` selection; used only to bump importance score | `rules/sigma/engine.py` | Not a Sigma engine | Mark as partial | OPEN |
 | D-4 | Network/C2 detection | MISSING | No rule for network connection / IDS alert; `NETWORK_TRAFFIC` never evaluated | `detection/rules.py` | Scenario 3 undetectable | Phase 13 | OPEN |
 | C-1 | Correlation | PARTIAL | Matches `user_name` OR `hostname` within 24h of `updated_at` (wall clock), OPEN/ANALYZING only; no IP | `correlation/engine.py` `find_related_case` | Events arriving after review open duplicate cases; no network correlation | Add IP; define review-state merge policy | OPEN |
-| C-2 | Investigation trigger | BROKEN | Every detection (new **or merged**) calls `asyncio.create_task(run_investigation)`; no lock. Reproduced: 2 concurrent investigations on case `09b762b7…` | `consumers/detection_consumer.py` `handle_event_stored` | Duplicate agent runs, racing status/report writes | Phase 5 lock; Phase 7 Celery | OPEN |
+| C-2 | Investigation trigger | BROKEN | Every detection (new **or merged**) calls `asyncio.create_task(run_investigation)`; no lock. Reproduced: 2 concurrent investigations on case `09b762b7…` | `consumers/detection_consumer.py` `handle_event_stored` | Duplicate agent runs, racing status/report writes | Phase 5 lock; Phase 7 Celery | **FIXED (Phase 5)** — Redis per-case lock with TTL + heartbeat; concurrent attempts record a re-run request instead of starting a duplicate; verified live (sequential passes) |
 
 ## 5. Agents & LLM
 
@@ -103,7 +103,7 @@ The "Restoration" column is updated as phases complete. `OPEN` = not yet address
 | S-1 | Confidence score | FAKE | `ConfidenceEngine.calculate_score(0.8, 0.7, p_score, 0.6)` — 3 of 4 inputs constants; 68/81 cases = 0.75 | `agents/orchestrator.py`, `scoring/confidence.py` | Headline number is fiction | Phase 9 derived formula | OPEN |
 | L-7b | Evidence truncation in prompts | BROKEN | `sanitize_evidence(max_length=2000)` truncated the serialized evidence list mid-item, silently dropping later evidence (and, after Phase 3, their IDs) from every agent prompt | `core/utils.py`, all agents | Agents analyzed a subset of evidence without knowing | Per-field clipping, max 40 items (earliest first) with explicit `omitted_item_count`, 20k block budget | **FIXED (Phase 3)** |
 | L-8 | Threat Intel degraded fallback | FAKE | On failure returned `historical_insight: "No prior matching incidents in verified investigation memory."` — a claim about a search that may not have run | `agents/threat_intel.py` | False negative presented as fact | `historical_insight=null`; statement only when memory search actually returned no results | **FIXED (Phase 3)** |
-| L-9 | Local LLM capacity under concurrent agents | BROKEN | Live run 19:05: Triage, Timeline and Threat Intel all hit the 120 s timeout in both (duplicate) investigations — 6 concurrent `llama3.1` requests to one local Ollama with evidence-contract prompts | `agents/orchestrator.py`, `services/llm_service.py` | Analytic agents degrade under real load | Phase 5 (no duplicate runs) + Phase 8 (bounded LLM concurrency, context size, retries/backoff) | OPEN |
+| L-9 | Local LLM capacity under concurrent agents | BROKEN | Live run 19:05: Triage, Timeline and Threat Intel all hit the 120 s timeout in both (duplicate) investigations — 6 concurrent `llama3.1` requests to one local Ollama with evidence-contract prompts | `agents/orchestrator.py`, `services/llm_service.py` | Analytic agents degrade under real load | Phase 5 (no duplicate runs) + Phase 8 (bounded LLM concurrency, context size, retries/backoff) | PARTIAL (Phase 5) — removing duplicate runs halved concurrent LLM calls (6 → 3) and all agents completed in the 20:27 live run; bounded LLM concurrency/retries remain Phase 8 |
 | S-2 | ATT&CK technique confidence | FAKE | `AttackTechnique.confidence` hardcoded: 0.8 (detection), 0.9 (threat intel) | `detection/engine.py`, `agents/threat_intel.py` | Invented per-technique confidence | Phase 9 | OPEN |
 
 ## 6. Memory
@@ -304,3 +304,30 @@ Entries are appended per phase with evidence.
 - The 6 pre-existing "resolved" cases in the dev database are themselves old test artifacts (X-7), so their memory records are `case_evidence` with no summary. Real dev data remains contaminated.
 - Detection-rule MITRE entries still carry no evidence link, so memory inherits `evidence_ids: []` for them.
 - Memory retrieval quality beyond this scenario is unmeasured; only one attack pattern has been verified end to end (Phase 13 covers the three scenarios).
+
+### Phase 5 — Investigation concurrency, state and session safety (2026-09-18)
+
+**Changed**
+- `core/locks.py`: Redis lock (`SET NX PX` + unique token). TTL expires a crashed holder's lock; a heartbeat refreshes it while work runs; release is compare-and-delete so an expired holder cannot release someone else's lock. Plus a re-run flag so evidence arriving mid-investigation is not dropped.
+- `agents/orchestrator.py`: `run_investigation` acquires the per-case lock, verifies the case is in an investigatable state, runs the DAG, then performs at most `INVESTIGATION_MAX_RERUNS` (2) sequential re-runs if attempts were made while it held the lock. Returns a typed outcome (`completed` / `skipped` / `failed`) instead of `None`, logs through `logging` instead of `print`, and broadcasts `INVESTIGATION_FAILED`.
+- `core/case_state.py`: explicit transition table; `INVESTIGATABLE_STATES`; `validate_transition` used by the orchestrator and `PATCH /status` (409 on invalid). `POST /analyze` refuses closed cases.
+- `services/investigation_runner.py`: background runs create and own their session; used by both `/analyze` and the detection consumer.
+
+**Tests** (`tests/test_investigation_concurrency.py`, real Redis + real database)
+- 3 concurrent runs of one case: exactly 1 executes, 2 are skipped, lock released afterwards
+- different cases are not blocked by each other
+- a re-run request made during a run is consumed by the holder
+- a stale lock from a "crashed holder" expires and the case is reclaimed
+- the heartbeat keeps a lock alive past its TTL, and a stale holder cannot release it
+- valid/invalid transition matrix, every status has an explicit set, API returns 409 and writes no audit row
+- closed cases are refused by both the API and the orchestrator
+- `/analyze` runs with a session it created (not the request session)
+- Full suite: **155 passed**.
+
+**Verified on the running system**
+- Live replay at 20:27:55 produced one case (`4f7c3c09`) with two strictly sequential passes: pass 1 20:27:55→20:29:24 (report v1, 7 findings), pass 2 started 20:29:24.9 (report v2, 8 findings, current). Previously the same replay produced two overlapping investigations.
+- All five agents completed in both passes (no LLM timeouts) with 3 concurrent LLM calls instead of 6; timeline came from the Timeline Agent rather than the evidence-chronology fallback.
+
+**Remaining / newly discovered**
+- Live proof of lock contention comes from the sequential re-run behaviour and the Redis-backed tests; two simultaneous `/analyze` calls were not exercised against the live stack.
+- Replay still re-ingests duplicate events (A-9), which is what triggers the re-run pass.

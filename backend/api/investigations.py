@@ -35,6 +35,8 @@ from schemas.case_management import (
     AuditLogResponse
 )
 from agents.orchestrator import orchestrator
+from core.case_state import INVESTIGATABLE_STATES, InvalidStatusTransition, validate_transition
+from services.investigation_runner import run_investigation_in_background
 from export.report_generator import report_generator
 from memory.service import memory_service
 from memory.case_inputs import build_fingerprint, load_case_memory_inputs, semantic_text
@@ -190,7 +192,15 @@ async def analyze_investigation(
     if not case:
         raise HTTPException(status_code=404, detail="Investigation not found")
         
-    background_tasks.add_task(orchestrator.run_investigation, db, str(case.id))
+    if case.status not in INVESTIGATABLE_STATES:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot analyze a case with status '{case.status.value}'. Reopen it first.",
+        )
+
+    # The background task owns its own session: the request-scoped session is closed
+    # when the response is returned.
+    background_tasks.add_task(run_investigation_in_background, str(case.id))
     return {"message": "Analysis started in background.", "investigation_id": str(case.id)}
 
 # ==============================================================================
@@ -424,6 +434,11 @@ async def update_investigation_status(
         raise HTTPException(status_code=404, detail="Investigation not found")
         
     prev_status = case.status
+    try:
+        validate_transition(prev_status, request.status)
+    except InvalidStatusTransition as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+
     case.status = request.status
     case.updated_at = datetime.now(timezone.utc)
 

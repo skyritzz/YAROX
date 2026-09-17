@@ -26,6 +26,11 @@ class Settings(BaseSettings):
     OLLAMA_MODEL: str = "llama3.1"
     MINIO_URL: str = "http://minio:9000"
     HEALTH_PROBE_TIMEOUT_SECONDS: float = 3.0
+    # Per-case investigation lock: TTL is refreshed while the investigation runs, and
+    # expires on its own if the holder crashes.
+    INVESTIGATION_LOCK_TTL_SECONDS: float = 300.0
+    # How many times an investigation may immediately re-run because evidence arrived while it ran
+    INVESTIGATION_MAX_RERUNS: int = 2
     
     # JWT Authentication & RBAC (Human User Access)
     JWT_SECRET_KEY: str = DEV_JWT_PLACEHOLDER
