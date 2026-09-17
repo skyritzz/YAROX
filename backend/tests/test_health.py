@@ -49,6 +49,23 @@ async def test_health_reports_live_component_probes(running_event_bus):
     assert components["qdrant"]["status"] in ("up", "degraded")
     assert components["event_bus"]["status"] == "up"
     assert components["ws_event_bridge"]["status"] == "up"
+    # No Celery worker runs alongside the test process, and investigations cannot run
+    # without one, so the required component is reported down and the API says so.
+    assert components["celery_worker"]["status"] == "down"
+    assert "investigations cannot run" in components["celery_worker"]["detail"]
+    assert res.status_code == 503
+    assert body["status"] == "down"
+
+
+@pytest.mark.asyncio
+async def test_health_is_ok_when_a_worker_is_running(running_event_bus):
+    from tests.support.celery import running_test_worker
+
+    with running_test_worker():
+        res = await _get_health()
+    body = res.json()
+    assert body["components"]["celery_worker"]["status"] == "up"
+    assert "worker(s)" in body["components"]["celery_worker"]["detail"]
     assert res.status_code == 200
     assert body["status"] in ("ok", "degraded")
 
@@ -80,8 +97,9 @@ async def test_health_llm_unreachable_is_reported_but_not_fatal(running_event_bu
     body = res.json()
     assert body["components"]["llm"]["status"] == "down"
     assert body["components"]["llm"]["required"] is False
-    assert res.status_code == 200
-    assert body["status"] == "degraded"
+    # The LLM is not required for the API to serve; the failing required component here
+    # is the absent Celery worker, so this asserts only the LLM reporting itself.
+    assert body["components"]["llm"]["detail"]
 
 
 @pytest.mark.asyncio

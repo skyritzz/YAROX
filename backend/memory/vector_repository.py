@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+import asyncio
 from typing import List, Dict, Any, Optional
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct, ScoredPoint, Filter, FieldCondition, MatchValue, PointIdsList
@@ -38,11 +39,41 @@ class IVectorRepository(ABC):
         pass
 
 class QdrantRepository(IVectorRepository):
+    """
+    Qdrant access with one client per event loop.
+
+    ``AsyncQdrantClient`` binds its internal synchronisation primitives to the loop that
+    first uses it. A process that runs several loops (a Celery worker calling
+    ``asyncio.run`` per task) would otherwise fail with "bound to a different event loop"
+    on the second task, so clients are created per running loop and dropped when the loop
+    is gone.
+    """
+
     def __init__(self, url: str = "http://qdrant:6333", collection_name: str = "investigation_memory"):
         self.url = url
         self.collection_name = collection_name
         self.vector_size = 384 # BAAI/bge-small-en-v1.5
-        self.qdrant = AsyncQdrantClient(url=url)
+        self._clients: Dict[int, "AsyncQdrantClient"] = {}
+        self._client_loops: Dict[int, Any] = {}
+
+    @property
+    def qdrant(self) -> AsyncQdrantClient:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:  # no running loop: fall back to a single shared client
+            loop = None
+        key = id(loop) if loop is not None else 0
+
+        for stored_key in [k for k, l in self._client_loops.items() if l is not None and l.is_closed()]:
+            self._clients.pop(stored_key, None)
+            self._client_loops.pop(stored_key, None)
+
+        client = self._clients.get(key)
+        if client is None:
+            client = AsyncQdrantClient(url=self.url)
+            self._clients[key] = client
+            self._client_loops[key] = loop
+        return client
 
     def _handle_exception(self, e: Exception, operation: str) -> None:
         err_msg = str(e).lower()

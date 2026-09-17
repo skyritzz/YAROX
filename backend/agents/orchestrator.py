@@ -29,13 +29,18 @@ class AgentOrchestrator:
         self.threat_intel = ThreatIntelAgent()
         self.report = ReportAgent()
 
-    async def run_investigation(self, db: AsyncSession, case_id: str) -> dict:
+    async def run_investigation(self, db: AsyncSession, case_id: str, session_factory=None) -> dict:
         """
         Runs the investigation DAG for a case under a per-case distributed lock.
 
         Only one investigation may run per case at a time. A second attempt does not
         queue behind the first: it records a re-run request, which the holder performs
         after it finishes, so evidence that arrives mid-investigation is still analyzed.
+
+        ``session_factory`` creates the sessions used by the agents. Callers running
+        outside the API process (Celery workers) must pass a factory bound to an engine
+        created inside their own event loop; the module-level engine's pooled connections
+        belong to the loop that created them.
         """
         async with investigation_lock(case_id) as acquired:
             if not acquired:
@@ -43,16 +48,18 @@ class AgentOrchestrator:
                 logger.info("Investigation for case %s already running; re-run requested", case_id)
                 return {"status": "skipped", "reason": "investigation already running for this case"}
 
-            outcome = await self._run_locked(db, case_id)
+            outcome = await self._run_locked(db, case_id, session_factory)
             passes = 0
             while await consume_rerun_request(case_id) and passes < settings.INVESTIGATION_MAX_RERUNS:
                 passes += 1
                 logger.info("Re-running investigation for case %s (evidence arrived during pass %d)", case_id, passes)
-                outcome = await self._run_locked(db, case_id)
+                outcome = await self._run_locked(db, case_id, session_factory)
             return outcome
 
-    async def _run_locked(self, db: AsyncSession, case_id: str) -> dict:
+    async def _run_locked(self, db: AsyncSession, case_id: str, session_factory=None) -> dict:
         from database.session import AsyncSessionLocal
+
+        make_session = session_factory or AsyncSessionLocal
 
         result = await db.execute(select(InvestigationCase).where(InvestigationCase.id == case_id))
         case = result.scalar_one_or_none()
@@ -75,7 +82,7 @@ class AgentOrchestrator:
 
         try:
             async def run_agent(agent, c_id, **kwargs):
-                async with AsyncSessionLocal() as session:
+                async with make_session() as session:
                     c_res = await session.execute(
                         select(InvestigationCase)
                         .where(InvestigationCase.id == c_id)
@@ -111,7 +118,7 @@ class AgentOrchestrator:
             await db.commit()
 
             # 5. Persist the canonical report (single source for API, UI and PDF)
-            async with AsyncSessionLocal() as report_session:
+            async with make_session() as report_session:
                 report = await persist_investigation_report(
                     report_session, case.id, triage_data, timeline_data, threat_data, report_data
                 )

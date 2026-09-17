@@ -64,7 +64,7 @@ async def test_concurrent_investigations_of_same_case_run_once(redis_client):
     case_id = await _make_case()
     started = []
 
-    async def slow_run(db, cid):
+    async def slow_run(db, cid, session_factory=None):
         started.append(cid)
         await asyncio.sleep(0.4)
         return {"status": "completed"}
@@ -91,7 +91,7 @@ async def test_two_different_cases_are_not_blocked_by_each_other():
     case_a, case_b = await _make_case(), await _make_case()
     running = []
 
-    async def slow_run(db, cid):
+    async def slow_run(db, cid, session_factory=None):
         running.append(cid)
         await asyncio.sleep(0.2)
         return {"status": "completed"}
@@ -110,7 +110,7 @@ async def test_rerun_request_is_recorded_and_consumed(redis_client):
     case_id = await _make_case()
     passes = []
 
-    async def run_once(db, cid):
+    async def run_once(db, cid, session_factory=None):
         passes.append(cid)
         if len(passes) == 1:
             # Another worker tries while this one holds the lock
@@ -130,7 +130,7 @@ async def test_expired_lock_from_a_crashed_holder_is_reclaimed(redis_client):
     # Simulate a crashed holder: a lock key with a short TTL and nobody refreshing it
     await redis_client.set(investigation_lock_key(case_id), "crashed-holder-token", px=300)
 
-    async def run(db, cid):
+    async def run(db, cid, session_factory=None):
         return {"status": "completed"}
 
     with patch("agents.orchestrator.AgentOrchestrator._run_locked", side_effect=run):
@@ -232,19 +232,24 @@ async def test_closed_case_is_not_investigated(analyst_client):
 # ---------------------------------------------------------------- background session safety
 
 @pytest.mark.asyncio
-async def test_analyze_endpoint_does_not_use_the_request_session(analyst_client):
+async def test_in_process_runner_uses_its_own_session():
+    """
+    Investigations dispatched to a worker are covered in test_investigation_worker.py.
+    The in-process runner (used by tests and as a fallback) must still create and own
+    its session: a request-scoped session is closed once the response is returned.
+    """
     case_id = await _make_case(status=S.OPEN)
     sessions = []
 
-    async def capture(db, cid):
+    async def capture(db, cid, session_factory=None):
         sessions.append(db)
         assert db.is_active
         await db.execute(select(InvestigationCase).where(InvestigationCase.id == uuid.UUID(cid)))
         return {"status": "completed"}
 
     with patch("agents.orchestrator.AgentOrchestrator._run_locked", side_effect=capture):
-        res = await analyst_client.post(f"/investigations/{case_id}/analyze")
-    assert res.status_code == 200
-    # The background task ran with a session it created and that session works
+        outcome = await run_investigation_in_background(str(case_id))
+
+    assert outcome["status"] == "completed"
     assert len(sessions) == 1
     assert sessions[0].is_active

@@ -103,7 +103,7 @@ async def probe_celery_worker() -> ProbeResult:
 
     replies = await asyncio.to_thread(celery_app.control.ping, timeout=1.0)
     if not replies:
-        return DOWN, "no Celery worker replied to ping"
+        return DOWN, "no Celery worker replied to ping; investigations cannot run"
     workers = sorted(name for reply in replies for name in reply)
     return UP, f"{len(workers)} worker(s): {', '.join(workers)}"
 
@@ -137,7 +137,7 @@ PROBES: Dict[str, Tuple[Callable[[], Awaitable[ProbeResult]], bool]] = {
     "event_bus": (probe_event_bus, True),
     "ws_event_bridge": (probe_ws_event_bridge, True),
     "llm": (probe_llm, False),
-    "celery_worker": (probe_celery_worker, False),
+    "celery_worker": (probe_celery_worker, True),
     "minio": (probe_minio, False),
 }
 

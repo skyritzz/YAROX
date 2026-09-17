@@ -47,7 +47,7 @@ The "Restoration" column is updated as phases complete. `OPEN` = not yet address
 | I-1 | Docker Compose stack | REAL | All 7 services start | `docker-compose.yml` | Dev platform | — | — |
 | I-2 | MinIO healthcheck | BROKEN | Health log: `exec: "curl": executable file not found` every 30s | `docker-compose.yml` minio.healthcheck | Permanent false "unhealthy"; masks real failures | Use `mc ready local` | **FIXED (Phase 2)** — `mc ready local`; container reports healthy |
 | I-3 | MinIO usage | MISSING | No code imports a MinIO/S3 client; not in `requirements.txt` | — | Spec claims artifact storage | Either implement artifact store or mark not implemented | OPEN |
-| I-4 | Celery worker | PARTIAL | Only `tasks.index_resolved_investigation_task` registered | `workers/celery_app.py` | Investigations run in API process | Phase 7 | OPEN |
+| I-4 | Celery worker | PARTIAL | Only `tasks.index_resolved_investigation_task` registered | `workers/celery_app.py` | Investigations run in API process | Phase 7 | **FIXED (Phase 7)** — `workers.tasks.investigation_tasks.run_investigation_task` registered and running investigations; `celery_worker` is now a required health component |
 | I-5 | Celery worker env | PARTIAL | Worker lacks `OLLAMA_BASE_URL`, `JWT_SECRET_KEY` env; `depends_on` not health-gated | `docker-compose.yml` celery_worker | Worker LLM calls use defaults; startup races | Share env block; gate on health | PARTIAL (Phase 2) — worker now receives `OLLAMA_BASE_URL`/`OLLAMA_MODEL`; health-gated `depends_on` OPEN |
 | I-6 | Python version | REAL (doc mismatch) | Container is 3.12; CLAUDE.md says 3.11 | `backend/Dockerfile` | Docs untruthful | Fix docs | OPEN |
 | I-7 | Frontend version | REAL (doc mismatch) | `next@16.2.10`, docs say Next 15 | `frontend/package.json` | Docs untruthful | Fix docs | OPEN |
@@ -80,6 +80,9 @@ The "Restoration" column is updated as phases complete. `OPEN` = not yet address
 | D-2 | Detection state | PARTIAL | Brute-force and lateral-movement counters in process memory (`defaultdict`) | `detection/rules.py` `FailedLoginBruteForce.failed_logins`, `LateralMovement.user_hosts` | Two instances disagree; restart resets | Phase 10: Redis-backed windows | OPEN |
 | D-3 | Sigma engine | PARTIAL | One YAML rule; only `contains`/`exact` selection; used only to bump importance score | `rules/sigma/engine.py` | Not a Sigma engine | Mark as partial | OPEN |
 | D-4 | Network/C2 detection | MISSING | No rule for network connection / IDS alert; `NETWORK_TRAFFIC` never evaluated | `detection/rules.py` | Scenario 3 undetectable | Phase 13 | OPEN |
+| D-5 | Insider-threat detection coverage | MISSING | Live replay of `datasets/insider_threat` (7-Zip staging of HR data, then a 15 MB upload to 203.0.113.50) produced **no detection and no case**: no rule covers file access, archive staging or data egress | `detection/rules.py` | A shipped dataset that the product cannot detect at all | Add data-staging/exfiltration rules (Phase 13 scenarios) or mark the dataset unsupported | OPEN |
+| W-3 | Worker lazy imports | BROKEN | On the live worker, `from agents.orchestrator import …` inside the task body raised `ModuleNotFoundError: No module named 'agents'` in every forked child (backend packages are namespace packages; eager/in-process execution worked, so tests passed) | `workers/tasks/investigation_tasks.py` | Every worker investigation failed after 3 retries | Import at module scope (parent imports at startup, children inherit) + explicit `sys.path` in `workers/celery_app.py` | **FIXED (Phase 7)** |
+| DB-2 | Cross-loop clients in workers | BROKEN | Agents used the module-level SQLAlchemy engine and the global Qdrant client, both bound to the loop that created them; the worker runs `asyncio.run` per task, so the second task failed ("attached to a different loop" / "bound to a different event loop") | `agents/orchestrator.py`, `memory/vector_repository.py` | Worker investigations fail from the second task onward | Session factory passed into the orchestrator (task uses its NullPool engine); Qdrant client created per event loop | **FIXED (Phase 7)** |
 | C-1 | Correlation | PARTIAL | Matches `user_name` OR `hostname` within 24h of `updated_at` (wall clock), OPEN/ANALYZING only; no IP | `correlation/engine.py` `find_related_case` | Events arriving after review open duplicate cases; no network correlation | Add IP; define review-state merge policy | OPEN |
 | C-2 | Investigation trigger | BROKEN | Every detection (new **or merged**) calls `asyncio.create_task(run_investigation)`; no lock. Reproduced: 2 concurrent investigations on case `09b762b7…` | `consumers/detection_consumer.py` `handle_event_stored` | Duplicate agent runs, racing status/report writes | Phase 5 lock; Phase 7 Celery | **FIXED (Phase 5)** — Redis per-case lock with TTL + heartbeat; concurrent attempts record a re-run request instead of starting a duplicate; verified live (sequential passes) |
 
@@ -358,3 +361,34 @@ Entries are appended per phase with evidence.
 **Remaining**
 - Global subscribers receive lifecycle events only (by design); case-scoped detail requires a `case_id` subscription.
 - Frontend still hardcodes `ws://localhost:8000` (W-2, Phase 14).
+
+### Phase 7 — Investigations on Celery workers (2026-09-18)
+
+**Changed**
+- `workers/tasks/investigation_tasks.py`: `run_investigation_task` runs the orchestrator in a worker process with a fresh `create_async_engine(..., poolclass=NullPool)` inside the task's own event loop; `acks_late`, retries with exponential backoff, returns the orchestrator outcome.
+- `agents/orchestrator.py`: accepts a `session_factory`; the task passes its NullPool factory so agents never use the API process's module-level engine.
+- `memory/vector_repository.py`: one `AsyncQdrantClient` per event loop (clients bind their primitives to the loop that first uses them).
+- `services/investigation_runner.py`: `dispatch_investigation()` queues the task and returns its id; `InvestigationDispatchError` on broker failure. `/analyze` returns the `task_id` (503 if the broker is unreachable), and the detection consumer dispatches instead of running agents in-process.
+- `workers/celery_app.py`: explicit `sys.path` entry for the backend directory; both task modules included.
+- `core/health.py`: `celery_worker` is now **required** ("investigations cannot run" when absent).
+
+**Two real defects this phase exposed (both would break the deployed worker, neither visible in-process)**
+1. Cross-loop clients (DB-2): the second task in a worker failed until the engine/Qdrant client became per-loop/per-task.
+2. Lazy imports in the forked child (W-3): `ModuleNotFoundError: No module named 'agents'` on the live worker while all tests passed, because the tests' in-process worker inherits a working import context. Found only by running the real worker.
+
+**Tests** (`tests/test_investigation_worker.py`)
+- a real Celery worker consuming the real broker runs the full DAG and persists a report (all five agents completed)
+- two consecutive tasks in the same worker both succeed (regression for the event-loop binding)
+- `/analyze` queues a task and runs nothing in the API process; returns 503 when the broker is down
+- detection consumer dispatches instead of executing
+- worker imports do not depend on the working directory; the orchestrator import stays at module scope
+- Full suite: **169 passed**.
+
+**Verified on the running system**
+- Worker registered `workers.tasks.investigation_tasks.run_investigation_task`; `/health` → `celery_worker: up`.
+- Dispatched case `f6c81ca3…`: worker log `Worker starting investigation` → `Worker finished … {'status': 'completed', 'report_status': 'complete'}`, task `succeeded in 200.5s`; all 5 agents `completed`; report v1 `complete`, 10 findings, 2 recommendations; case → `WAITING_FOR_REVIEW`.
+- A browser WebSocket client connected to the **API** process received 7 events produced by the **worker** process (`AGENT_STARTED`, 5 × `AGENT_THINKING`, `REPORT_READY`) — the Phase 6 bridge carrying real worker output.
+
+**Remaining / newly discovered**
+- D-5: the `insider_threat` dataset triggers no detection rule at all.
+- Replay and the in-process event bus still die on API restart (E-1): a backend hot-reload during a replay silently dropped the remaining events.

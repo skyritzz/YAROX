@@ -36,7 +36,7 @@ from schemas.case_management import (
 )
 from agents.orchestrator import orchestrator
 from core.case_state import INVESTIGATABLE_STATES, InvalidStatusTransition, validate_transition
-from services.investigation_runner import run_investigation_in_background
+from services.investigation_runner import InvestigationDispatchError, dispatch_investigation
 from export.report_generator import report_generator
 from memory.service import memory_service
 from memory.case_inputs import build_fingerprint, load_case_memory_inputs, semantic_text
@@ -198,10 +198,15 @@ async def analyze_investigation(
             detail=f"Cannot analyze a case with status '{case.status.value}'. Reopen it first.",
         )
 
-    # The background task owns its own session: the request-scoped session is closed
-    # when the response is returned.
-    background_tasks.add_task(run_investigation_in_background, str(case.id))
-    return {"message": "Analysis started in background.", "investigation_id": str(case.id)}
+    # Investigations run on Celery workers, not in the API process
+    try:
+        task_id = dispatch_investigation(str(case.id))
+    except InvestigationDispatchError as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Could not queue the investigation: {e}. Is the Celery worker reachable?",
+        )
+    return {"message": "Analysis queued for a worker.", "investigation_id": str(case.id), "task_id": task_id}
 
 # ==============================================================================
 # Phase 5.1 Case Management APIs (Notes, Assignment, Severity, Reopen, Audit)
