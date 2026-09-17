@@ -3,6 +3,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from core.health import check_health, probe_postgres
+from websocket.investigation_ws import investigation_event_bridge
 from core.config import settings, validate_production_settings
 from core.events import event_bus
 from consumers.db_writer import register_consumers
@@ -42,6 +43,9 @@ async def startup_event():
     event_bus.start()
     register_consumers()
     register_detection_consumers()
+
+    # Deliver investigation events published by any process to this process's WebSocket clients
+    await investigation_event_bridge.start()
     
     # Initialize Authoritative Investigation Memory Service
     await memory_service.initialize()
@@ -49,6 +53,7 @@ async def startup_event():
 @app.on_event("shutdown")
 async def shutdown_event():
     event_bus.stop()
+    await investigation_event_bridge.stop()
 
 # CORS configuration
 app.add_middleware(

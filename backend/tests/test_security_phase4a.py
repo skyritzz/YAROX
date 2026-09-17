@@ -159,7 +159,9 @@ async def test_cross_case_websocket_isolation():
     await test_manager.connect(ws_case_b, user_id="user2", case_id=case_b_id)
     
     # Broadcast event specifically targeting Case A
-    await test_manager.broadcast({
+    # deliver_local is the delivery step of broadcast(); the Redis publish path that
+    # carries events between processes is covered by tests/test_event_bridge.py
+    await test_manager.deliver_local({
         "event_type": "investigation_event",
         "investigation_id": case_a_id,
         "payload": {"secret_evidence": "secret_data_for_a"}

@@ -10,6 +10,7 @@ from database.session import get_db, AsyncSessionLocal
 from models.investigation import AgentReasoningStep, AgentExecution
 from models.user import User
 from core.auth import decode_access_token
+from core.event_stream import InvestigationEventBridge, publish_investigation_event
 
 router = APIRouter()
 
@@ -36,8 +37,17 @@ class ScopedConnectionManager:
 
     async def broadcast(self, message: dict):
         """
-        Scoped broadcast: Detailed reasoning steps are sent ONLY to clients in the matching case room.
-        Generic lifecycle alerts (e.g. REPORT_READY, AGENT_STARTED) are sent to the case room AND global listeners.
+        Publishes an investigation event for delivery to every API process (see
+        core/event_stream.py). Agents call this from whatever process they run in;
+        the subscribing bridge in each API process performs the actual socket writes.
+        """
+        await publish_investigation_event(message, deliver_local=self.deliver_local)
+
+    async def deliver_local(self, message: dict):
+        """
+        Scoped delivery to this process's connections: detailed reasoning steps go ONLY to
+        clients in the matching case room. Generic lifecycle alerts (e.g. REPORT_READY,
+        AGENT_STARTED) go to the case room AND global listeners.
         """
         case_id = message.get("investigation_id") or message.get("case_id")
         event_type = message.get("event") or message.get("event_type")
@@ -69,6 +79,9 @@ class ScopedConnectionManager:
             self.global_subscribers.discard(dead_ws)
 
 manager = ScopedConnectionManager()
+
+# Bridges Redis-published investigation events into this process's connections
+investigation_event_bridge = InvestigationEventBridge(deliver=manager.deliver_local)
 
 @router.websocket("")
 async def websocket_endpoint(

@@ -125,7 +125,7 @@ The "Restoration" column is updated as phases complete. `OPEN` = not yet address
 
 | ID | Component | Status | Evidence | File / Symbol | Why it matters | Proposed fix | Restoration |
 |---|---|---|---|---|---|---|---|
-| W-1 | WS manager | PARTIAL | In-process `ScopedConnectionManager`; JWT via query param; replays stored steps on connect | `websocket/investigation_ws.py` | Worker processes cannot broadcast | Phase 6 Redis pub/sub fan-out | OPEN |
+| W-1 | WS manager | PARTIAL | In-process `ScopedConnectionManager`; JWT via query param; replays stored steps on connect | `websocket/investigation_ws.py` | Worker processes cannot broadcast | Phase 6 Redis pub/sub fan-out | **FIXED (Phase 6)** — events published to Redis pub/sub; each API process subscribes and fans out locally; `/health` reports the bridge |
 | W-2 | WS URL in frontend | PARTIAL | Hardcoded `ws://localhost:8000` | `context/LiveInvestigationContext.tsx` | Breaks outside localhost | Derive from `NEXT_PUBLIC_API_URL` | OPEN |
 
 ## 8. Tests
@@ -331,3 +331,30 @@ Entries are appended per phase with evidence.
 **Remaining / newly discovered**
 - Live proof of lock contention comes from the sequential re-run behaviour and the Redis-backed tests; two simultaneous `/analyze` calls were not exercised against the live stack.
 - Replay still re-ingests duplicate events (A-9), which is what triggers the re-run pass.
+
+### Phase 6 — Cross-process event delivery (2026-09-18)
+
+**Problem.** WebSocket connections live in the API process, so anything an agent broadcast from another process could never reach a browser. This had to be solved *before* moving investigations to Celery (Phase 7), otherwise live reasoning would silently disappear.
+
+**Changed**
+- `core/event_stream.py`: `publish_investigation_event()` publishes to the Redis channel `yarox:ws:investigations`; `InvestigationEventBridge` subscribes and delivers into the local connection manager. If Redis is unreachable the event is delivered to local connections instead (single-process deployments keep working) and the publish reports failure.
+- `websocket/investigation_ws.py`: `broadcast()` now publishes (any process); `deliver_local()` performs the scoped socket writes. Case scoping is unchanged: detailed steps only to the case room, lifecycle events also to global subscribers.
+- `api/main.py`: bridge started on startup, stopped on shutdown.
+- `core/health.py`: new **required** component `ws_event_bridge` (running + subscribed), so a broken event path is visible instead of silent.
+
+**Tests** (`tests/test_event_bridge.py`, real Redis)
+- an event published from a separate thread with its own event loop and Redis connection (as a worker process does) reaches a connected client
+- `broadcast()` goes through Redis (`published is True`), not the local fallback
+- when Redis is unreachable the fallback delivers locally and reports `False`
+- case scoping preserved across the bridge (case A detail only to A; `REPORT_READY` also to global)
+- health probe reports up/down for the bridge
+- `tests/test_security_phase4a.py` websocket scoping test now targets `deliver_local` (the delivery step); the publish path is covered above.
+- Full suite: **160 passed**.
+
+**Verified on the running system**
+- `GET /health` → `ws_event_bridge: up, "subscribed to yarox:ws:investigations"`.
+- A real `websockets` client connected to the running backend during an `apt29_simulation` replay received 6 live events (`AGENT_STARTED` Orchestrator, `AGENT_THINKING` for Memory, Triage, Timeline, Threat Intel, SOC Lead), each travelling agent → Redis → bridge → client.
+
+**Remaining**
+- Global subscribers receive lifecycle events only (by design); case-scoped detail requires a `case_id` subscription.
+- Frontend still hardcodes `ws://localhost:8000` (W-2, Phase 14).

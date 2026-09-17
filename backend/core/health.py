@@ -20,6 +20,7 @@ import redis.asyncio as aioredis
 from sqlalchemy import text
 
 from core.config import settings
+from core.event_stream import INVESTIGATION_EVENT_CHANNEL
 
 UP, DEGRADED, DOWN = "up", "degraded", "down"
 
@@ -107,6 +108,16 @@ async def probe_celery_worker() -> ProbeResult:
     return UP, f"{len(workers)} worker(s): {', '.join(workers)}"
 
 
+async def probe_ws_event_bridge() -> ProbeResult:
+    from websocket.investigation_ws import investigation_event_bridge
+
+    if not investigation_event_bridge.running:
+        return DOWN, "investigation event bridge is not running; worker events cannot reach browsers"
+    if not investigation_event_bridge.subscribed.is_set():
+        return DEGRADED, "investigation event bridge started but not subscribed yet"
+    return UP, f"subscribed to {INVESTIGATION_EVENT_CHANNEL}"
+
+
 async def probe_event_bus() -> ProbeResult:
     from core.events import event_bus
 
@@ -124,6 +135,7 @@ PROBES: Dict[str, Tuple[Callable[[], Awaitable[ProbeResult]], bool]] = {
     "redis": (probe_redis, True),
     "qdrant": (probe_qdrant, True),
     "event_bus": (probe_event_bus, True),
+    "ws_event_bridge": (probe_ws_event_bridge, True),
     "llm": (probe_llm, False),
     "celery_worker": (probe_celery_worker, False),
     "minio": (probe_minio, False),
