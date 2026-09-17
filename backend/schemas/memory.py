@@ -8,9 +8,17 @@ class InvestigationMetadata(BaseModel):
     qdrant_id: str
     knowledge_version: int = 1
     embedding_model: str = "BAAI/bge-small-en-v1.5"
-    llm_model: str = "ollama/llama3.1"
+    # Knowledge is assembled deterministically from persisted case data; no LLM is used
+    llm_model: Optional[str] = None
     generated_at: datetime
     generation_prompt_version: str = "1.0"
+    # "investigation_report": built from the current persisted report;
+    # "case_evidence": the case has no report, built from evidence and detection data only
+    knowledge_source: str = "investigation_report"
+    source_report_id: Optional[str] = None
+    source_report_version: Optional[int] = None
+    # Exact text embedded into the vector store (kept so indexing can be retried from the stored record)
+    embedding_text: str = ""
 
 class InvestigationSection(BaseModel):
     title: str
@@ -110,8 +118,9 @@ class InvestigationFingerprint(BaseModel):
     mitre_techniques: List[str] = Field(default_factory=list)
     campaign: Optional[str] = None
     risk_score: float = 0.0
-    ioc_hash: str
-    timeline_hash: str
+    # SHA-256 over sorted IOCs; None when the case has no IOCs (an empty set is not a match)
+    ioc_hash: Optional[str] = None
+    timeline_hash: str = ""
 
 class SimilarityResult(BaseModel):
     investigation_id: str
@@ -119,8 +128,12 @@ class SimilarityResult(BaseModel):
     semantic_score: float = 0.0
     mitre_overlap_score: float = 0.0
     ioc_overlap_score: float = 0.0
+    asset_overlap_score: float = 0.0
     attack_type_match: bool = False
     campaign_match: bool = False
+    shared_mitre_techniques: List[str] = Field(default_factory=list)
+    shared_iocs: List[str] = Field(default_factory=list)
+    shared_assets: List[str] = Field(default_factory=list)
     knowledge_object: Optional[InvestigationKnowledgeObject] = None
 
 class MemoryContext(BaseModel):

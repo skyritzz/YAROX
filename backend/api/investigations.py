@@ -37,9 +37,8 @@ from schemas.case_management import (
 from agents.orchestrator import orchestrator
 from export.report_generator import report_generator
 from memory.service import memory_service
-from schemas.memory import InvestigationFingerprint
+from memory.case_inputs import build_fingerprint, load_case_memory_inputs, semantic_text
 from workers.tasks.memory_tasks import index_resolved_investigation_task
-import hashlib
 
 router = APIRouter()
 
@@ -650,30 +649,12 @@ async def get_similar_investigations(
     if not case:
         raise HTTPException(status_code=404, detail="Investigation not found")
         
-    ev_res = await db.execute(select(EvidenceItem).where(EvidenceItem.case_id == case_uuid))
-    evidence = ev_res.scalars().all()
-    
-    ips, domains, hashes = set(), set(), set()
-    for ev in evidence:
-        if ev.evidence_type == 'ip': ips.add(ev.artifact)
-        elif ev.evidence_type == 'domain': domains.add(ev.artifact)
-        elif ev.evidence_type == 'hash': hashes.add(ev.artifact)
-
-    ioc_str = "".join(sorted(list(ips) + list(domains) + list(hashes)))
-    mitre_techs = [mt.technique_id for mt in case.mitre_techniques] if case.mitre_techniques else []
-    
-    fingerprint = InvestigationFingerprint(
-        attack_type=None,
-        mitre_techniques=mitre_techs,
-        campaign=None,
-        risk_score=case.confidence_score or 0.0,
-        ioc_hash=hashlib.sha256(ioc_str.encode()).hexdigest(),
-        timeline_hash=""
-    )
-    
-    current_summary = f"{case.title} {case.description or ''}"
+    inputs = await load_case_memory_inputs(db, case_uuid)
     await memory_service.initialize()
-    similar_cases = await memory_service.find_similar_cases(db, fingerprint, current_summary)
+    similar_cases = await memory_service.find_similar_cases(
+        db, build_fingerprint(inputs), inputs.indicators, semantic_text(inputs),
+        exclude_investigation_id=str(case_uuid),
+    )
     
     # Priority 10: Truthful memory results. Return empty list if no matches found.
     if not similar_cases:

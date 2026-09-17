@@ -2,9 +2,9 @@ from typing import Dict, Any, List
 from sqlalchemy.ext.asyncio import AsyncSession
 from models.investigation import InvestigationCase, EvidenceItem
 from agents.base import BaseAgent
-from schemas.memory import MemoryContext, InvestigationFingerprint
+from schemas.memory import MemoryContext
 from memory.service import memory_service
-import hashlib
+from memory.case_inputs import build_fingerprint, load_case_memory_inputs, semantic_text
 
 class MemoryAgent(BaseAgent):
     def __init__(self):
@@ -22,34 +22,23 @@ class MemoryAgent(BaseAgent):
                 "text": "Extracting current case fingerprint to search historical memory."
             })
 
-            # Extract fingerprint
-            ips, domains, hashes = set(), set(), set()
-            for ev in evidence:
-                if ev.evidence_type == 'ip': ips.add(ev.artifact)
-                elif ev.evidence_type == 'domain': domains.add(ev.artifact)
-                elif ev.evidence_type == 'hash': hashes.add(ev.artifact)
-
-            ioc_str = "".join(sorted(list(ips) + list(domains) + list(hashes)))
-            mitre_techs = [mt.technique_id for mt in case.mitre_techniques] if case.mitre_techniques else []
-            
-            fingerprint = InvestigationFingerprint(
-                attack_type=None,
-                mitre_techniques=mitre_techs,
-                campaign=None,
-                risk_score=case.confidence_score or 0.0,
-                ioc_hash=hashlib.sha256(ioc_str.encode()).hexdigest(),
-                timeline_hash=""
-            )
+            # Fingerprint and indicators are derived from persisted case state, exactly
+            # as they are when a resolved case is indexed into memory.
+            inputs = await load_case_memory_inputs(db, case.id)
+            fingerprint = build_fingerprint(inputs)
+            indicators = inputs.indicators
+            mitre_techs = fingerprint.mitre_techniques
 
             await self.emit_step(db, execution, "reasoning_started", {
                 "text": "Querying Investigation Memory Service for similar past cases using Hybrid Search."
             })
 
-            current_summary = f"{case.title} {case.description or ''}"
-
             async def _memory_search():
                 await memory_service.initialize()
-                return await memory_service.find_similar_cases(db, fingerprint, current_summary)
+                return await memory_service.find_similar_cases(
+                    db, fingerprint, indicators, semantic_text(inputs),
+                    exclude_investigation_id=str(case.id),
+                )
 
             similar_cases = await self.run_tool(
                 db, execution, "memory_search",
@@ -57,7 +46,8 @@ class MemoryAgent(BaseAgent):
                     "collection": memory_service.vector_repo.collection_name,
                     "limit": 5,
                     "mitre_technique_count": len(mitre_techs),
-                    "ioc_count": len(ips) + len(domains) + len(hashes),
+                    "ioc_count": len(indicators.iocs()),
+                    "asset_count": len(indicators.assets()),
                 },
                 operation=_memory_search,
                 summarize_output=lambda results: {
@@ -102,12 +92,11 @@ class MemoryAgent(BaseAgent):
                     continue
                 past_ko = sim.knowledge_object
                 
-                shared_mitre.update(set(mitre_techs) & set(past_ko.attack.mitre_techniques))
+                shared_mitre.update(sim.shared_mitre_techniques)
                 
-                # Check shared IOCs
-                current_iocs = ips | domains | hashes
-                past_iocs = set(past_ko.evidence.ips + past_ko.evidence.domains + past_ko.evidence.hashes)
-                shared_iocs.update(current_iocs & past_iocs)
+                # Shared indicators computed by the memory service against this case's indicators
+                shared_iocs.update(sim.shared_iocs)
+                shared_assets.update(sim.shared_assets)
                 
                 if past_ko.attack.campaign:
                     shared_campaigns.add(past_ko.attack.campaign)

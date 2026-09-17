@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import Column, String, DateTime, Float, ForeignKey, Enum, Text, Integer, Boolean
+from sqlalchemy import Column, String, DateTime, Float, ForeignKey, Enum, Text, Integer, Boolean, Index, text
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 import enum
@@ -211,8 +211,16 @@ class InvestigationMemory(Base):
     generated_at = Column(DateTime(timezone=True))
     
     qdrant_id = Column(String, nullable=False)
+    # Set only after the vector was written to Qdrant; NULL means the record is pending indexing
+    vector_indexed_at = Column(DateTime(timezone=True), nullable=True)
+    knowledge_source = Column(String, nullable=True)
+    source_report_id = Column(UUID(as_uuid=True), ForeignKey("investigation_reports.id"), nullable=True)
 
     case = relationship("InvestigationCase", backref="memory")
+
+    __table_args__ = (
+        Index("uq_investigation_memory_latest", "investigation_id", unique=True, postgresql_where=text("is_latest")),
+    )
 
 class CaseNote(Base):
     __tablename__ = "case_notes"

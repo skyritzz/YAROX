@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional
 from qdrant_client import AsyncQdrantClient
-from qdrant_client.models import Distance, VectorParams, PointStruct, ScoredPoint, Filter, FieldCondition, MatchValue
+from qdrant_client.models import Distance, VectorParams, PointStruct, ScoredPoint, Filter, FieldCondition, MatchValue, PointIdsList
 import uuid
 
 class MemoryBackendError(Exception):
@@ -27,6 +27,14 @@ class IVectorRepository(ABC):
 
     @abstractmethod
     async def search(self, vector: List[float], limit: int = 5, filters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        pass
+
+    @abstractmethod
+    async def delete(self, ids: List[str]) -> None:
+        pass
+
+    @abstractmethod
+    async def list_point_ids(self) -> List[str]:
         pass
 
 class QdrantRepository(IVectorRepository):
@@ -94,8 +102,34 @@ class QdrantRepository(IVectorRepository):
             for res in results:
                 hit = dict(res.payload or {})
                 hit["_semantic_score"] = res.score
+                hit["_point_id"] = str(res.id)
                 hits.append(hit)
                 
             return hits
         except Exception as e:
             self._handle_exception(e, "search")
+
+    async def delete(self, ids: List[str]) -> None:
+        if not ids:
+            return
+        try:
+            await self.qdrant.delete(collection_name=self.collection_name, points_selector=PointIdsList(points=list(ids)))
+        except Exception as e:
+            self._handle_exception(e, f"delete of {len(ids)} points")
+
+    async def list_point_ids(self) -> List[str]:
+        try:
+            if not await self.qdrant.collection_exists(self.collection_name):
+                return []
+            ids: List[str] = []
+            offset = None
+            while True:
+                points, offset = await self.qdrant.scroll(
+                    collection_name=self.collection_name, limit=256, offset=offset,
+                    with_payload=False, with_vectors=False,
+                )
+                ids.extend(str(p.id) for p in points)
+                if offset is None:
+                    return ids
+        except Exception as e:
+            self._handle_exception(e, "scroll")

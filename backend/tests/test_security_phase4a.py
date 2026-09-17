@@ -318,37 +318,33 @@ async def test_resolved_investigation_indexed():
 # -----------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_truthful_memory_query_when_empty():
+    """
+    A case with no matching history returns an empty list, using the real database and
+    the real memory service (no fabricated historical matches).
+    """
+    from database.session import AsyncSessionLocal
+    from memory.service import memory_service
+
     analyst = make_user(UserRole.ANALYST)
     app.dependency_overrides[get_current_user] = lambda: analyst
     token = create_access_token({"sub": str(analyst.id), "email": analyst.email, "role": analyst.role.value})
-    case_id = str(uuid.uuid4())
-    
-    case = InvestigationCase(
-        id=uuid.UUID(case_id),
-        title="Fresh Unique Incident",
-        status=InvestigationStatus.OPEN,
-        severity=Severity.HIGH,
-        confidence_score=0.8
-    )
-    
-    mock_db = AsyncMock()
-    mock_db.execute = AsyncMock(return_value=MagicMock(
-        scalar_one_or_none=lambda: case,
-        scalars=lambda: MagicMock(all=lambda: [])
-    ))
-    
-    async def override_db():
-        yield mock_db
-        
-    app.dependency_overrides[get_db] = override_db
-    
-    with patch("memory.service.memory_service.initialize", new_callable=AsyncMock):
-        with patch("memory.service.memory_service.find_similar_cases", new_callable=AsyncMock, return_value=[]):
-            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
-                res = await ac.get(f"/investigations/{case_id}/similar", headers={"Authorization": f"Bearer {token}"})
-            assert res.status_code == 200
-            data = res.json()
-            assert data == []
+    case_id = uuid.uuid4()
+
+    async with AsyncSessionLocal() as session:
+        session.add(InvestigationCase(
+            id=case_id,
+            title="Fresh Unique Incident",
+            status=InvestigationStatus.OPEN,
+            severity=Severity.HIGH,
+            confidence_score=0.8,
+        ))
+        await session.commit()
+
+    await memory_service.initialize()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        res = await ac.get(f"/investigations/{case_id}/similar", headers={"Authorization": f"Bearer {token}"})
+    assert res.status_code == 200
+    assert res.json() == []
 
 
 # -----------------------------------------------------------------------------

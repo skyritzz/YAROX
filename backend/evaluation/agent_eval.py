@@ -91,7 +91,14 @@ class AgentEvaluator:
             "historical_insight": "No prior incidents."
         })
 
-        with patch("services.llm_service.llm_service.generate", new_callable=AsyncMock, return_value=mock_llm_response):
+        # The agent derives its memory fingerprint from persisted case state; this isolated
+        # evaluation supplies that state directly instead of a database.
+        from memory.case_inputs import CaseMemoryInputs
+        from memory.indicators import extract_case_indicators
+        inputs = CaseMemoryInputs(case=case, evidence=evidence, indicators=extract_case_indicators(evidence), report=None)
+
+        with patch("services.llm_service.llm_service.generate", new_callable=AsyncMock, return_value=mock_llm_response), \
+             patch("agents.threat_intel.load_case_memory_inputs", new_callable=AsyncMock, return_value=inputs):
             with patch("memory.service.memory_service.find_similar_cases", new_callable=AsyncMock, return_value=[]):
                 with patch("websocket.investigation_ws.manager.broadcast", new_callable=AsyncMock):
                     result = await self.threat_intel_agent.analyze(mock_db, case, evidence)

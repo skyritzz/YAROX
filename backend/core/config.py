@@ -16,6 +16,12 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://redis:6379/0"
     QDRANT_URL: str = "http://qdrant:6333"
     QDRANT_COLLECTION: str = "investigation_memory"
+    # Similar cases scoring below this weighted similarity are not returned (see memory/service.py).
+    # Measured on this stack (BAAI/bge-small-en-v1.5): a true repeat incident scores ~0.98, while
+    # unrelated security text still reaches ~0.24-0.39 because the embedding model gives any two
+    # security summaries a high baseline. Semantic similarity alone is therefore not a match;
+    # 0.45 keeps matches carried by technique/IOC/asset overlap and drops semantic-only noise.
+    MEMORY_MIN_SIMILARITY: float = 0.45
     OLLAMA_BASE_URL: str = "http://host.docker.internal:11434"
     OLLAMA_MODEL: str = "llama3.1"
     MINIO_URL: str = "http://minio:9000"

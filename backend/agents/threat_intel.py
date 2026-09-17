@@ -11,11 +11,10 @@ from agents.evidence import (
 )
 from services.llm_service import llm_service
 from memory.service import memory_service
-from schemas.memory import InvestigationFingerprint
+from memory.case_inputs import build_fingerprint, load_case_memory_inputs, semantic_text
 from security.mitre.knowledge_base import mitre_kb
 from core.utils import sanitize_evidence, build_sandboxed_agent_prompt
 import json
-import hashlib
 
 class ThreatIntelAgent(BaseAgent):
     def __init__(self):
@@ -35,29 +34,17 @@ class ThreatIntelAgent(BaseAgent):
                 "text": "Reviewing evidence and timeline to identify adversary techniques."
             }, evidence_ids=sorted(allowed_ids))
 
-            ips, domains, hashes = set(), set(), set()
-            for ev in evidence:
-                if ev.evidence_type == 'ip': ips.add(ev.artifact)
-                elif ev.evidence_type == 'domain': domains.add(ev.artifact)
-                elif ev.evidence_type == 'hash': hashes.add(ev.artifact)
-
-            ioc_str = "".join(sorted(list(ips) + list(domains) + list(hashes)))
-            mitre_techs = [mt.technique_id for mt in case.mitre_techniques] if case.mitre_techniques else []
-
-            fingerprint = InvestigationFingerprint(
-                attack_type=None,
-                mitre_techniques=mitre_techs,
-                campaign=None,
-                risk_score=case.confidence_score or 0.0,
-                ioc_hash=hashlib.sha256(ioc_str.encode()).hexdigest(),
-                timeline_hash=""
-            )
-
-            summary_str = f"{case.title} {case.description or ''}"
+            inputs = await load_case_memory_inputs(db, case.id)
+            fingerprint = build_fingerprint(inputs)
+            indicators = inputs.indicators
+            mitre_techs = fingerprint.mitre_techniques
 
             async def _memory_search():
                 await memory_service.initialize()
-                return await memory_service.find_similar_cases(db, fingerprint, summary_str, limit=3)
+                return await memory_service.find_similar_cases(
+                    db, fingerprint, indicators, semantic_text(inputs), limit=3,
+                    exclude_investigation_id=str(case.id),
+                )
 
             similar_cases = await self.run_tool(
                 db, execution, "memory_search",
@@ -65,7 +52,8 @@ class ThreatIntelAgent(BaseAgent):
                     "collection": memory_service.vector_repo.collection_name,
                     "limit": 3,
                     "mitre_technique_count": len(mitre_techs),
-                    "ioc_count": len(ips) + len(domains) + len(hashes),
+                    "ioc_count": len(indicators.iocs()),
+                    "asset_count": len(indicators.assets()),
                 },
                 operation=_memory_search,
                 summarize_output=lambda results: {

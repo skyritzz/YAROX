@@ -110,14 +110,16 @@ The "Restoration" column is updated as phases complete. `OPEN` = not yet address
 
 | ID | Component | Status | Evidence | File / Symbol | Why it matters | Proposed fix | Restoration |
 |---|---|---|---|---|---|---|---|
-| MEM-1 | IOC extraction | BROKEN | Filters `evidence_type in ('ip','domain','hash',...)`; detection emits `AUTHENTICATION_FAILURE`, `PROCESS_EXECUTION`, etc. → IOC sets always empty → identical `ioc_hash` for every case → `ioc_score=1.0` for every comparison | `agents/memory.py`, `agents/threat_intel.py`, `memory/knowledge_builder.py`, `api/investigations.py get_similar_investigations` | Every past case gets a false +0.15 similarity | Extract IOCs from linked events (IP, user, host, process, command); empty set → no IOC score | OPEN |
-| MEM-2 | Indexing order | BROKEN | Qdrant upsert happens **before** Postgres insert; on FK failure the vector is orphaned | `memory/service.py` `index_knowledge` | Orphan vectors pollute retrieval | Postgres commit first, then Qdrant, mark indexed | OPEN |
-| MEM-3 | Indexing task failure semantics | BROKEN | `except Exception: print` → task reports SUCCESS; no retry | `workers/tasks/memory_tasks.py` | Failures invisible | Raise, `autoretry_for`, backoff | OPEN |
-| MEM-4 | Real memory content | BROKEN | 0 `investigation_memory` rows; 17 Qdrant points all from tests; 6 RESOLVED cases never indexed | DB/Qdrant | Memory Agent always returns "no matches" | Reindex resolved cases after fixes; purge orphans | OPEN |
-| MEM-5 | Qdrant URL | FAKE (config) | `memory_service = InvestigationMemoryService(QdrantRepository())` → hardcoded `http://qdrant:6333`; `settings.QDRANT_URL` ignored | `memory/service.py` | Config ignored | Use settings | **FIXED (Phase 1)** — `settings.QDRANT_URL`, new `settings.QDRANT_COLLECTION` |
-| MEM-6 | Self-match | PARTIAL | Memory Agent does not exclude the current case | `agents/memory.py` | Reopened resolved cases match themselves | Exclude own ID | OPEN |
-| MEM-7 | `InvestigationMemory.investigation_id` lookup | PARTIAL | `scalar_one_or_none()` on all versions → raises `MultipleResultsFound` on 3rd index | `memory/service.py` | Reindex breaks after 2 versions | Filter `is_latest` | OPEN |
+| MEM-1 | IOC extraction | BROKEN | Filters `evidence_type in ('ip','domain','hash',...)`; detection emits `AUTHENTICATION_FAILURE`, `PROCESS_EXECUTION`, etc. → IOC sets always empty → identical `ioc_hash` for every case → `ioc_score=1.0` for every comparison | `agents/memory.py`, `agents/threat_intel.py`, `memory/knowledge_builder.py`, `api/investigations.py get_similar_investigations` | Every past case gets a false +0.15 similarity | Extract IOCs from linked events (IP, user, host, process, command); empty set → no IOC score | **FIXED (Phase 4)** — `memory/indicators.py` extracts IPs/domains/hashes/users/hosts/processes/commands from linked events; empty IOC set ⇒ `ioc_hash = None` (never a match) |
+| MEM-2 | Indexing order | BROKEN | Qdrant upsert happens **before** Postgres insert; on FK failure the vector is orphaned | `memory/service.py` `index_knowledge` | Orphan vectors pollute retrieval | Postgres commit first, then Qdrant, mark indexed | **FIXED (Phase 4)** — PostgreSQL record committed first, then vector, then `vector_indexed_at`; retrieval only accepts hits matching the latest indexed record |
+| MEM-3 | Indexing task failure semantics | BROKEN | `except Exception: print` → task reports SUCCESS; no retry | `workers/tasks/memory_tasks.py` | Failures invisible | Raise, `autoretry_for`, backoff | **FIXED (Phase 4)** — task raises, `autoretry_for` with exponential backoff (max 5), logs; unresolved cases refused |
+| MEM-4 | Real memory content | BROKEN | 0 `investigation_memory` rows; 17 Qdrant points all from tests; 6 RESOLVED cases never indexed | DB/Qdrant | Memory Agent always returns "no matches" | Reindex resolved cases after fixes; purge orphans | **FIXED (Phase 4)** — 17 orphan vectors deleted, 6 resolved cases indexed, real report-sourced record verified live |
+| MEM-5 | Qdrant URL | FAKE (config) | `memory_service = InvestigationMemoryService(QdrantRepository())` → hardcoded `http://qdrant:6333`; `settings.QDRANT_URL` ignored | `memory/service.py` | Config ignored | Use settings | **FIXED (Phase 1/4)** — settings-driven collection and URL |
+| MEM-6 | Self-match | PARTIAL | Memory Agent does not exclude the current case | `agents/memory.py` | Reopened resolved cases match themselves | Exclude own ID | **FIXED (Phase 4)** — `exclude_investigation_id` in every caller; verified live (self-query returns 0 matches) |
+| MEM-7 | `InvestigationMemory.investigation_id` lookup | PARTIAL | `scalar_one_or_none()` on all versions → raises `MultipleResultsFound` on 3rd index | `memory/service.py` | Reindex breaks after 2 versions | Filter `is_latest` | **FIXED (Phase 4)** — queries filter `is_latest`; partial unique index enforces one latest record per investigation |
 | MEM-8 | Global singleton mutation | BROKEN | `index_resolved_investigation_task` replaced `memory_service.vector_repo` with a client bound to the task's short-lived event loop; any later in-process memory call failed with `Event loop is closed` (reproduced: ThreatIntel agent degraded in test run after indexing task) | `workers/tasks/memory_tasks.py` | Silent degradation of memory-backed agents in any process that also runs the task | Task-local `InvestigationMemoryService` sharing the embedding model | **FIXED (Phase 1)** — regression assertion in `test_celery_broker_dispatch_memory_indexing` |
+| MEM-9 | LLM summarization at index time | FAKE | `KnowledgeBuilder` called the LLM when a case was resolved, inventing `attack_type`/`campaign`/`lessons_learned` (fallback text "Verified incident recorded in long-term memory."); unreviewed model output entered long-term memory, bypassing the human review gate | `memory/knowledge_builder.py` | Memory contents did not match what the analyst reviewed | Build knowledge from the persisted report (or evidence only, labelled `case_evidence`); no LLM at index time | **FIXED (Phase 4)** |
+| MEM-10 | Semantic-only false matches | BROKEN | Measured: unrelated security texts score 0.24–0.39 total (semantic 0.49–0.78) because the embedding model gives any two security summaries a high baseline; these were shown as "Historical Intelligence Matches" | `memory/service.py` | Unrelated cases presented as historical precedent | Weighted score + `MEMORY_MIN_SIMILARITY = 0.45`; overlaps (technique/IOC/asset) carry the match | **FIXED (Phase 4)** |
 
 ## 7. WebSocket / Realtime
 
@@ -260,3 +262,45 @@ Entries are appended per phase with evidence.
 - C-2: duplicate concurrent investigations still occur (Phase 5).
 - Report `confidence_score` still comes from the hardcoded formula (S-1, Phase 9); S-2 technique confidence constants.
 - Detection-rule MITRE entries carry no evidence link (`source: detection_rule`, `evidence_ids: []`) because `AttackTechnique` has no evidence relation.
+
+### Phase 4 — Semantic memory (2026-09-18)
+
+**Why memory was broken (root causes, verified)**
+1. IOC extraction filtered evidence rows by type labels (`ip`, `domain`, `hash`) that the detection engine never produces (it writes `PROCESS_EXECUTION`, `AUTHENTICATION_FAILURE`, …), so every case had an empty IOC set, an identical `ioc_hash` and a false +0.15 IOC score against every other case.
+2. Qdrant was written before PostgreSQL, so a failed transaction left orphan vectors; all 17 vectors in the dev collection were orphans from test runs.
+3. The indexing task swallowed exceptions and reported success, so failures were invisible.
+4. Knowledge was re-summarized by an LLM at index time, putting unreviewed content (invented attack types/campaigns) into memory.
+
+**Changed**
+- `memory/indicators.py`: indicators from linked events (normalized columns, metadata, raw payload) — IPs validated, hashes by regex, identities normalized (`DOMAIN\user` → user), processes basenamed.
+- `memory/case_inputs.py`: one loader used by indexing *and* querying (Memory Agent, Threat Intel, `/similar`), so both sides are built identically. Was duplicated in 3 places, each with the same bug.
+- `memory/knowledge_builder.py`: deterministic, no LLM. Source `investigation_report` (summary, recommendations, timeline, MITRE from the reviewed report) or `case_evidence` when a resolved case has no report, stated in the stored summary.
+- `memory/service.py`: durable-first write ordering, pending-record resume, superseded-vector deletion, self-exclusion, and an explainable score `0.5*semantic + 0.2*mitre + 0.2*ioc + 0.1*asset` with shared techniques/IOCs/assets returned.
+- `memory/maintenance.py` + `GET /memory/status`, `POST /memory/reconcile`, `POST /memory/reindex`: observable memory state and orphan cleanup.
+- `workers/tasks/memory_tasks.py`: raises on failure, retries with backoff, refuses non-RESOLVED cases (human gate enforced in the worker, not only the API).
+- Migration `d4e5f6a7b8c9`: `vector_indexed_at`, `knowledge_source`, `source_report_id`, partial unique index `uq_investigation_memory_latest`.
+
+**Tests** (`tests/test_memory.py`, real Postgres + real Qdrant, no vector/embedding mocks)
+- indicators from events, per-case `ioc_hash`, `None` for no indicators
+- knowledge from report / from evidence-only, and that no LLM is called (`mock_llm.assert_not_called()`)
+- index → retrieve with component scores; unrelated case filtered by threshold; self never matches
+- vector failure leaves a pending record with no vector, retry resumes the same record (no second version)
+- re-index supersedes version and deletes the old vector
+- reconcile removes orphans and repairs pending records
+- Celery task indexes a resolved case, refuses an OPEN case, and ends FAILURE when it cannot succeed
+- `GET /memory/status` reports real state
+- `tests/test_memory_schemas.py`: TimelineSection validation preserved from the removed `test_memory_pipeline.py`; obsolete LLM-knowledge tests replaced (`test_knowledge_builder_never_calls_an_llm`), `/similar` truthfulness test rewritten against the real database.
+- `docker compose exec backend pytest -v tests/` → **129 passed**.
+
+**Verified on the running system**
+- `GET /memory/status` before: 6 resolved cases, 0 indexed, 17 Qdrant points, **17 orphans**.
+- `POST /memory/reconcile` → `{"deleted_orphan_points": 17}`; `POST /memory/reindex` → 6 tasks, worker logged `Indexed case … (case_evidence)` ×6.
+- `GET /memory/status` after: resolved 6, indexed 6, pending 0, points 6, orphans 0, missing 0.
+- Real investigation resolved through the API → indexed as `investigation_report` v1 with indicators extracted from events (`ips: ["192.168.1.50"]`, `hosts: ["workstation-01"]`, `mitre: ["T1059","T1110"]`).
+- Retrieval from the other real case of the same scenario: **1 match, total 0.9827** (semantic 0.9653, mitre 1.0, ioc 1.0, asset 1.0), shared techniques `["T1059","T1110"]`, shared assets `host:workstation-01`, `user:jdoe`. The 6 unrelated legacy memories were correctly excluded by the threshold.
+- Self-query returns 0 matches.
+
+**Remaining / newly discovered**
+- The 6 pre-existing "resolved" cases in the dev database are themselves old test artifacts (X-7), so their memory records are `case_evidence` with no summary. Real dev data remains contaminated.
+- Detection-rule MITRE entries still carry no evidence link, so memory inherits `evidence_ids: []` for them.
+- Memory retrieval quality beyond this scenario is unmeasured; only one attack pattern has been verified end to end (Phase 13 covers the three scenarios).
