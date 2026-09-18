@@ -458,3 +458,40 @@ Entries are appended per phase with evidence.
 
 **Remaining**
 - `evidence_coverage` currently shows 0.5 on live runs because agents cite the most relevant evidence rather than every item; that is a real signal, not a defect, but it means scores rarely approach 1.0.
+
+### Verification checkpoint — Phases 0-9 (2026-09-18)
+
+Run against the committed state `441c7d3` (Phase 9) with a clean working tree; the
+unverified Phase 10 work is parked on branch `restoration/phase10-wip`.
+
+**Test suite** — `docker compose exec backend pytest -v tests/` → **207 passed** in 66s.
+
+**Fresh-database verification** (new database `yarox_fresh_verify`)
+
+| Step | Command | Result |
+|---|---|---|
+| Documented Alembic path on an empty DB | `alembic upgrade head` | **fails** — `UndefinedTableError: relation "investigation_cases" does not exist` at revision `cba64ddf4a02` (blocker X-5, reproduced) |
+| Supported path | `python -m scripts.migrate` | `database schema ready (created-from-models-and-stamped)`; `alembic_version = e5f6a7b8c9d0`; 18 tables |
+| Schema vs ORM models | `compare_metadata` | **no differences** |
+| Idempotence | `python -m scripts.migrate` again | `database schema ready (upgraded)` |
+| Fresh vs development schema | `pg_dump --schema-only` diff | identical after normalizing column order |
+| Application boot | `startup_event()` against the fresh DB | schema guard passed, 3 users seeded |
+
+**End-to-end reality test** (live stack, real Ollama `llama3.1`, no mocks)
+
+Ingested one Sysmon-style encoded-PowerShell event through the documented ingestion API
+(`POST /events/ingest` with `X-API-Key`) for host `E2E-PC-1789755707`:
+
+1. **Ingest** → event `5e126ddf`, normalized to `PROCESS_EXECUTION`, stored with `payload_sha256 130e1d799236…`
+2. **Integrity** → `GET /events/5e126ddf/integrity` → `verified: true`, stored == computed, `yarox-event-v1`
+3. **Detection → case** → case `e3368fff` created by `SuspiciousProcessExecution`
+4. **Worker investigation** → `Worker starting investigation` → `Worker finished … {'status': 'completed', 'report_status': 'complete'}` (125 s, Celery worker process)
+5. **Agents** (measured, not defaulted): Memory 0.2 s (tool 107.2 ms), Triage 44.2 s (LLM 44.0 s), Timeline 26.0 s (LLM 25.8 s), Threat Intel 64.9 s (LLM 64.6 s, tool 59.4 ms), SOC Lead 59.4 s (LLM 59.2 s) — all `completed`, per-agent confidence 1.0 from validation outcomes
+6. **Report** → `GET /investigations/e3368fff/report` → v1 `complete`, severity HIGH, confidence **0.7964**, `timeline_source: timeline_agent`, 8 findings, 4 evidence-cited recommendations, MITRE `T1059 (detection_rule)` and **`T1059.001 (threat_intel_agent)`** — sub-technique preserved
+7. **Traceability** → every finding resolves finding → evidence `d0e7f815` → event `5e126ddf` → source `Sysmon` → timestamp `2026-09-18T09:15:00Z` → sha256 `130e1d799236…`
+8. **Confidence breakdown** (stored on the case): rule_severity 0.75×0.30=0.225, agent_completion 1.0×0.20=0.2, evidence_coverage 1.0×0.20=0.2, corroboration 0.3833×0.15=0.0575 ("1 source event across 1 telemetry source"), memory_support 0.6395×0.10=0.0639, evidence_integrity 1.0×0.05=0.05 → **0.7964**
+9. **PDF** → `GET /investigations/e3368fff/export` → HTTP 200 `application/pdf`, 4139 bytes, rendered from the persisted report
+10. **Human gate** → `PATCH /status {"status":"RESOLVED"}` → memory indexed as `investigation_report` v1 with indicators extracted from the event (`ips ["198.51.100.77"]`, `hosts ["e2e-pc-1789755707"]`, `mitre ["T1059","T1059.001"]`)
+11. **Retrieval** → a second, similar ingested event created case `35ac14c9`; `GET /investigations/35ac14c9/similar` returned the resolved case first at **0.8197** (semantic 0.939, mitre 1.0, ioc 0.5, asset 0.5; shared `T1059`, `198.51.100.77`, `user:asmith`), ahead of an older case at 0.629.
+
+No step used mocked data, a hardcoded value or a fabricated timestamp.
