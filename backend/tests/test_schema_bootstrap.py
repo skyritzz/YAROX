@@ -35,11 +35,19 @@ async def _schema_state():
 
 @pytest.mark.asyncio
 async def test_bootstrap_builds_empty_database_at_head():
+    """
+    X-5 fix: bootstrap() used to build an empty database via Base.metadata.create_all()
+    + `alembic stamp head` (concealing that the real migration chain couldn't do this
+    itself - see docs/YAROX_REALITY_AUDIT.md X-5 and tests/test_migration_genesis.py
+    for the dedicated regression test of the chain itself). Now that the chain has a
+    genesis migration, bootstrap() always just runs `alembic upgrade head` - the
+    branch this test used to exercise no longer exists.
+    """
     await _recreate_database(MIGRATION_DB)
     try:
         action = await asyncio.to_thread(bootstrap, URL)
         diffs, version = await _schema_state()
-        assert action == "created-from-models-and-stamped"
+        assert action == "upgraded"
         assert version == HEAD
         assert diffs == []
     finally:

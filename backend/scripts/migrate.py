@@ -1,12 +1,19 @@
 """
 Database schema bootstrap: the only component that creates or alters the schema.
 
-  * Empty database (no application tables, no alembic_version):
-        the historical migration chain cannot build a schema from scratch
-        (docs/YAROX_REALITY_AUDIT.md, X-5), so the schema is created from the ORM
-        models and stamped at the current migration head.
-  * Existing database: ``alembic upgrade head``.
-  * Application tables present but no alembic_version: refuse to guess; exit non-zero.
+  * Empty database (no tables at all): ``alembic upgrade head`` builds the
+    complete schema from the genesis migration (``6b66f0fdb4f3``) forward.
+    Before that migration existed, the historical chain could not build a
+    schema from scratch (docs/YAROX_REALITY_AUDIT.md, X-5) and this bootstrap
+    used to paper over it with ``Base.metadata.create_all`` + ``alembic stamp
+    head`` — that fallback is gone now that the chain is actually fixed; see
+    docs/MIGRATION_REMEDIATION_PROPOSAL.md for the fix and
+    tests/test_migration_genesis.py for the regression test that would fail
+    if this chain broke again.
+  * Existing database, already versioned: ``alembic upgrade head`` applies
+    only whatever is newer than its current stamp.
+  * Application tables present but no alembic_version: refuse to guess; exit
+    non-zero rather than silently stamping an unknown schema.
 
 Usage: python -m scripts.migrate
 """
@@ -41,27 +48,11 @@ async def _existing_tables(database_url: str) -> set:
         await engine.dispose()
 
 
-async def _create_schema_from_models(database_url: str) -> None:
-    import models  # noqa: F401
-    from models.base import Base
-
-    engine = create_async_engine(database_url, poolclass=NullPool)
-    try:
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-    finally:
-        await engine.dispose()
-
-
 def bootstrap(database_url: str) -> str:
-    """Brings the database to the migration head. Returns the action taken."""
+    """Brings the database to the migration head via Alembic. Returns the action taken."""
     tables = asyncio.run(_existing_tables(database_url))
     cfg = alembic_config(database_url)
-    if not tables:
-        asyncio.run(_create_schema_from_models(database_url))
-        command.stamp(cfg, "head")
-        return "created-from-models-and-stamped"
-    if "alembic_version" not in tables:
+    if tables and "alembic_version" not in tables:
         raise RuntimeError(
             "Database has application tables but no alembic_version; refusing to modify an unversioned schema."
         )

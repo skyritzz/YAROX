@@ -10,3 +10,4 @@ dist/
 build/
 .qdrant/
 database/data/
+backups/

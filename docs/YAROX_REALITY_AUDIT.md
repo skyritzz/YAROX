@@ -139,7 +139,7 @@ The "Restoration" column is updated as phases complete. `OPEN` = not yet address
 | X-2 | Test isolation | BROKEN | Tests use `settings.DATABASE_URL` (dev DB); `test_celery_broker_dispatch_memory_indexing` sends real Celery task; `test_reopen_case_lifecycle` resolves without mocking `.delay` → worker FK failure; Qdrant test collections on dev Qdrant | `tests/test_memory_pipeline.py`, `tests/test_phase5_case_management.py` | Tests corrupt dev data | Test DB `yarox_test`, isolated Celery broker, test Qdrant prefix, Redis DB 15, guard assertion | **FIXED (Phase 1)** |
 | X-3 | Mock-heavy tests | PARTIAL | Agent/evaluation tests patch `llm_service.generate`, use `AsyncMock` sessions | `evaluation/agent_eval.py`, several tests | Prove logic, not integration | Keep as unit tests; add real integration tests | OPEN |
 | X-4 | Blocking sleep in async test | PARTIAL | `time.sleep(2)` inside async test | `tests/test_memory_pipeline.py` | Blocks loop | Replaced with `asyncio.sleep` + in-process test worker | **FIXED (Phase 1)** |
-| X-5 | Alembic migrations | BROKEN | `alembic upgrade head` on an empty database fails: base revision `f070db4817a2` is empty (`pass`), `8532d6f9c999` is empty, `cba64ddf4a02` alters non-existent `investigation_cases`, `24d74fa147f3` reads legacy `agent_actions`. Real schema only exists because `api/main.py` runs `Base.metadata.create_all` at startup | `alembic/versions/*` | Fresh deployments cannot be built from migrations; schema changes are unmanaged | Squash into a baseline under ID `7a3e8b1d9c4f` (**blocked: requires owner approval to delete historical migration files**). Interim: fresh DBs built with `create_all` + `alembic stamp head`; new migrations are additive and tested from a frozen baseline | PARTIAL — `scripts/migrate.py` is now the only schema owner (empty DB: create_all+stamp; else upgrade); app startup no longer runs `create_all` and refuses an outdated schema. **A non-destructive remediation (insert a new genesis migration ahead of the current root; do not delete/rewrite the 5 broken files) is proposed in `docs/MIGRATION_REMEDIATION_PROPOSAL.md` Part 1 — not yet implemented, pending review.** |
+| X-5 | Alembic migrations | **FIXED** | Was: `alembic upgrade head` on an empty database failed at `cba64ddf4a02` (`UndefinedTableError: relation "investigation_cases" does not exist`). Fixed by a new genesis migration (`6b66f0fdb4f3`, `down_revision=None`) creating exactly the pre-Alembic foundation the original 5 broken migrations assume, with `f070db4817a2` repointed to it (one line changed; none of the 5 originally-broken files were deleted or rewritten). `scripts/migrate.py`'s `create_all`+stamp fallback removed entirely — every database path now goes through real `alembic upgrade head`. | `alembic/versions/6b66f0fdb4f3_*.py` (new), `alembic/versions/64fc2b276e5a_*.py` (new, unrelated FK/nullable fix found during validation), `alembic/versions/f070db4817a2_*.py` (1-line `down_revision` change), `scripts/migrate.py` | Fresh deployments can now be built from migrations alone; schema changes are fully managed | Done — see `docs/MIGRATION_REMEDIATION_PROPOSAL.md` §1.5-1.8 | **FIXED** — verified: real `alembic upgrade head` on a genuinely empty DB succeeds with 0 `compare_metadata` diffs against ORM models; a real copy of the dev database (27 users/96 cases/295 events) upgraded with 0 data loss and 0 diffs; idempotent re-run is a no-op; app boots against the migrated schema; applied to the real dev database after backup (`backups/yarox_pre_x5_migration_*.dump`), 0 data loss; 3 new regression tests confirmed to fail against the original chain (`git stash` verified) and pass with the fix; full suite 265/265, 3 consecutive runs. |
 | X-6 | Model / schema drift | BROKEN | Migrated dev schema has `ON DELETE SET NULL` on `investigation_cases.assigned_to_user_id`/`resolved_by_user_id`; models had no `ondelete`. Dev DB is also **missing** `ix_investigation_cases_assigned_to_user_id` and `ix_investigation_cases_resolved_by_user_id` that the model declares | `models/investigation.py` | Tests built from models diverge from production schema | Models aligned (`ondelete="SET NULL"`); missing indexes to be added by next migration | **FIXED (Phase 2)** — FK aligned (Phase 1); migration `b7c1e2d3f4a5` creates missing indexes (verified in dev `pg_indexes`) |
 | X-7 | Historical dev-data contamination | BROKEN | Dev DB contains 27 users (3 seeded) and test-titled cases/Qdrant points from pre-isolation test runs | dev Postgres/Qdrant | Dev data is not trustworthy | Owner decision on cleanup; orphan vectors handled in Phase 4 | OPEN — precise inventory (95 cases, 83% from a pre-isolation 2026-08-21–23 burst; 24 of 27 users auto-generated in an 80-second window), backup commands, and a purge criterion that preserves cases cited as evidence in this document are proposed in `docs/MIGRATION_REMEDIATION_PROPOSAL.md` Part 2 — not yet executed, pending review. |
 
@@ -656,3 +656,83 @@ was produced, covering:
 item 5, backed by live-queried facts (not estimates) and, for the migration
 fix specifically, by an already-existing passing test that validates the
 core mechanism being proposed. Nothing destructive has been executed.
+
+### X-5 fix — Alembic fresh-install migration chain (2026-09-20)
+
+**Root cause.** Alembic was adopted onto this project after a real schema
+already existed (built by `Base.metadata.create_all()` before Alembic was
+formalized). The earliest 5 migrations in the chain were auto-generated by
+diffing that already-populated database and never contained the DDL to
+create the foundational tables they assume — so `alembic upgrade head` on a
+genuinely empty database has never worked, from the very first commit that
+introduced Alembic. Reproduced fresh before any fix: `UndefinedTableError:
+relation "investigation_cases" does not exist` at `cba64ddf4a02`.
+
+**Fix.** Per `docs/MIGRATION_REMEDIATION_PROPOSAL.md` §1.3, implemented
+non-destructively:
+- `backend/alembic/versions/6b66f0fdb4f3_genesis_pre_alembic_baseline.py`
+  (new): a genesis migration, `down_revision=None`, creating exactly the
+  pre-Alembic foundation the 5 broken migrations assume — derived
+  mechanically by reverse-applying the already-written `downgrade()`
+  functions of `7a3e8b1d9c4f`, `2331ec567cbb`, `24d74fa147f3`, `cba64ddf4a02`
+  against the independently-verified `tests/support/baseline_schema.py`
+  snapshot, not hand-guessed.
+- `backend/alembic/versions/f070db4817a2_phase_2_models.py`: exactly one
+  line changed (`down_revision: None → '6b66f0fdb4f3'`). No other file among
+  the original 5 was touched.
+- `backend/alembic/versions/64fc2b276e5a_align_audit_logs_case_notes_with_models.py`
+  (new): fixes a second, real, previously-invisible defect found while
+  validating the genesis migration — `7a3e8b1d9c4f`'s own `upgrade()`
+  declares `audit_logs.timestamp`/`case_notes.created_at` as
+  `nullable=False` and 4 foreign keys with `ondelete=CASCADE`/`SET NULL`,
+  but the ORM models (and every real database, built via `create_all`) use
+  the plain defaults. Confirmed on the real dev DB before fixing:
+  `confdeltype='a'` (NO ACTION) on all 4 constraints, both columns
+  nullable — matching models, not the migration text, because that
+  migration's literal DDL had never actually executed against any real
+  database until the genesis migration made it do so for the first time.
+- `backend/scripts/migrate.py`: removed the `create_all`+stamp fallback for
+  empty databases entirely (not kept as a "just in case" path — the
+  constraint was "never use create_all to conceal a broken chain," and
+  leaving it in place unused would still match that pattern). `bootstrap()`
+  now always calls real `alembic upgrade head`.
+
+**Tests.** `backend/tests/test_migration_genesis.py` (3 new): pure
+`alembic upgrade head` against a genuinely empty database (the core
+regression test — fails with the original `UndefinedTableError` if
+reverted); a structural check that the chain has exactly one root and one
+head with no orphaned files; a check that a database stamped exactly at
+genesis still reaches a zero-diff head. Plus
+`test_schema_bootstrap.py::test_bootstrap_builds_empty_database_at_head`
+updated (asserts `"upgraded"` instead of the now-removed
+`"created-from-models-and-stamped"`). All 4 confirmed to genuinely fail
+against the original chain via `git stash` of the fix, confirmed to pass
+with it restored.
+
+**Verified**: `docker compose exec backend pytest -q tests/` → **265
+passed** (262 + 3 new), run 3× consecutively, zero flakes. Real
+`alembic upgrade head` on a fresh empty DB → 0 `compare_metadata` diffs. A
+`pg_dump`/`pg_restore` copy of the real dev database (27 users, 96 cases,
+295 events, 2 audit logs, 524 agent executions) upgraded with identical row
+counts after and 0 diffs; re-running the upgrade was a no-op. The real
+FastAPI app (`TestClient`, real lifespan) booted against the freshly
+migrated database, `/health` → `200 ok`. Applied to the real dev database
+after taking a fresh backup (`backups/yarox_pre_x5_migration_*.dump`):
+`docker compose restart backend` → `Running upgrade e5f6a7b8c9d0 ->
+64fc2b276e5a` → row counts unchanged, `/health` reports `"schema at
+migration head 64fc2b276e5a"`.
+
+**Known limitations.** No dead-letter/rollback tooling beyond Alembic's own
+`downgrade()` (written and present in both new migrations, not separately
+exercised end-to-end). Suricata EVE / Splunk HEC connectors and Phase 13
+remain out of scope, unaffected by this fix. Parts 2 and 3 of the migration
+remediation proposal (dev-data purge, untracked video files) remain
+unexecuted proposals, per instruction.
+
+**Completion criterion met**: `alembic upgrade head` succeeds on a
+genuinely empty database; existing installations upgrade with zero data
+loss; the resulting schema matches ORM metadata exactly (0 diffs, both
+paths); re-running the upgrade is a safe no-op; the application boots
+against the migrated schema; the full test suite passes; regression tests
+exist and are confirmed to fail against the original chain. None of the
+original 5 broken migration files were deleted or rewritten.

@@ -1,10 +1,13 @@
 # Migration Remediation Proposal + Data/Files Inventory & Backup Plan
 
-**Status: PROPOSAL ONLY. No migration file, dev-data row, or untracked file has
-been touched, deleted, moved, or modified by this document.** Per explicit
-instruction: the five migration files stay exactly as they are, dev cases are
-not purged, and the untracked videos are not removed until this proposal is
-reviewed and a decision is made.
+**Status: Part 1 (X-5) is now IMPLEMENTED and verified — see "Part 1 —
+Implementation" below for what actually shipped, exact commands run, and
+results. Parts 2 and 3 (dev-data inventory/backup and untracked-files
+inventory/backup) remain PROPOSAL ONLY** — no dev-data row and no untracked
+file has been touched, deleted, or moved. None of the original 5
+historically-broken migration files were deleted, rewritten, or
+renumbered either — the fix is a pure addition (two new files); see below
+for exactly what changed and why that's safe.
 
 ---
 
@@ -121,41 +124,184 @@ long-dropped `agent_actions` table so `24d74fa147f3`'s data-migration `SELECT`
 succeeds — everything else can be adapted directly from the already-tested
 `create_baseline_schema()` content.
 
-### 1.4 What is explicitly *not* proposed
+### 1.4 What was *not* done
 
-- **Not** deleting any of the five files.
-- **Not** rewriting any of the five files' `upgrade()`/`downgrade()` bodies.
-- **Not** changing `scripts/migrate.py`'s current behavior. Once the genesis
-  migration is implemented and verified, `scripts/migrate.py`'s `create_all`
-  branch for empty databases *could* eventually be simplified to a plain
-  `alembic upgrade head` for every case — but that is an optional future
-  simplification, not a requirement, and should only be considered after the
-  genesis migration itself has been running safely for some time.
-- **Not** implementing any of this in the current session. This is a
-  proposal for a **future, separate phase**, to be implemented and tested on
-  its own, specifically because it touches the migration chain — the one
-  category of change where a mistake is hardest to reverse for anyone
-  already running the application.
+- **Not** deleted any of the five originally-broken files.
+- **Not** rewrote any of the five files' `upgrade()`/`downgrade()` bodies.
+  The only edit to an existing file is a single line: `f070db4817a2`'s
+  `down_revision` changed from `None` to the new genesis revision ID — its
+  own content, revision ID, and position in the chain are unchanged.
+- **Not** used `Base.metadata.create_all()` + `alembic stamp head` to
+  conceal a still-broken chain. `scripts/migrate.py`'s empty-database
+  special case (that exact pattern) has been **removed**, not kept as a
+  fallback — see 1.6 below. `bootstrap()` now always runs real
+  `alembic upgrade head`, for every database state.
+- **Not** purged dev data or removed untracked files (Parts 2/3 below
+  remain untouched proposals).
 
-### 1.5 Verification plan for when this is implemented (not run now)
+### 1.5 What was implemented
 
-1. `alembic upgrade head` from a genuinely empty database (drop and recreate
-   it first) must now succeed end to end, with no `scripts/migrate.py`
-   involvement, producing zero `compare_metadata` diffs against `Base.metadata`
-   — this is the concrete, currently-failing case from the Phase 0-9
-   verification checkpoint (`docs/YAROX_REALITY_AUDIT.md`), and becomes the
-   regression test proving the fix.
-2. Simulate every one of the five old stamp points (`f070db4817a2`,
-   `cba64ddf4a02`, `24d74fa147f3`, `2331ec567cbb`, `8532d6f9c999`) on a
-   database built via the *old* `create_baseline_schema()`-style DDL (i.e. as
-   if that installation predates this fix), stamp it there, then run
-   `alembic upgrade head` and confirm it reaches head cleanly with no attempt
-   to re-run the genesis migration.
-3. Confirm `scripts/migrate.py`'s existing "already-versioned DB" branch
-   (`alembic upgrade head`) is unaffected for a database already at the
-   current real head (`e5f6a7b8c9d0` or later by the time this ships).
-4. Re-run the full backend test suite and the fresh-database verification
-   procedure already established in the Phase 0-9 checkpoint.
+1. **`backend/alembic/versions/6b66f0fdb4f3_genesis_pre_alembic_baseline.py`
+   (new)** — the genesis migration described in 1.3, `down_revision=None`,
+   creating exactly the pre-Alembic foundation the five broken migrations
+   assume: `events`, `replay_sessions`, `security_entities`, `users`,
+   `investigation_cases` (without the columns added later by
+   `cba64ddf4a02`/`7a3e8b1d9c4f`), `attack_techniques`, `evidence_items`
+   (without `related_agent`, added later), `investigation_memory`,
+   `security_relationships`, and the historical `agent_actions` table
+   (reconstructed verbatim from `24d74fa147f3`'s own `downgrade()`, since
+   that migration's data-migration step reads from it before dropping it).
+   Not hand-guessed: derived mechanically by reverse-applying, in order, the
+   already-written `downgrade()` of `7a3e8b1d9c4f`, then `2331ec567cbb`,
+   then `24d74fa147f3`, then `cba64ddf4a02` against the independently
+   verified `tests/support/baseline_schema.py` snapshot, then validated
+   empirically (see 1.7).
+2. **`backend/alembic/versions/f070db4817a2_phase_2_models.py`** —
+   one-line change: `down_revision: Union[str, None] = None` →
+   `down_revision: Union[str, None] = '6b66f0fdb4f3'`.
+3. **`backend/alembic/versions/64fc2b276e5a_align_audit_logs_case_notes_with_models.py`
+   (new)** — a second, unrelated-but-necessary fix found while validating
+   the genesis migration (see 1.6).
+4. **`backend/scripts/migrate.py`** — removed the `create_all`-based
+   empty-database branch entirely (`_create_schema_from_models()` deleted).
+   `bootstrap()` is now: refuse an unversioned-but-populated database (this
+   guard is unchanged), otherwise `alembic upgrade head` — the same one
+   line handles a genuinely empty database and an existing one, since the
+   genesis migration means Alembic itself now knows how to build from
+   nothing.
+5. **`backend/tests/test_migration_genesis.py` (new)** — regression tests
+   (1.8).
+6. **`backend/tests/test_schema_bootstrap.py`** — one pre-existing test's
+   assertion updated (`action == "created-from-models-and-stamped"` →
+   `action == "upgraded"`), because the code path it asserted on no longer
+   exists — this is the direct, intended consequence of removing the
+   `create_all` fallback, not a defect.
+
+### 1.6 A second, real defect found while validating the fix
+
+Validating the genesis migration (comparing its output against
+`tests/support/baseline_schema.py`'s independently-verified snapshot, then
+against live ORM metadata via `compare_metadata`) surfaced something the
+genesis migration itself doesn't cause: **`7a3e8b1d9c4f`'s own `upgrade()`**
+— an already-active, currently-shipping migration, not one of the five
+originally-broken ones — **declares `audit_logs.timestamp` and
+`case_notes.created_at` as `nullable=False`, and four foreign keys
+(`audit_logs`/`case_notes` → `case_id`/`user_id`) with
+`ondelete='CASCADE'`/`ondelete='SET NULL'`, but `models/investigation.py`'s
+`AuditLog`/`CaseNote` classes declare all of this with SQLAlchemy's plain
+defaults** (nullable, no `ondelete`).
+
+This was invisible until now because **`7a3e8b1d9c4f`'s literal DDL has
+never actually executed against any real database in this project** —
+every real database (including the current dev database) got these two
+tables from `Base.metadata.create_all()` (matching the models), and every
+test that exercises the post-baseline chain starts from
+`tests/support/baseline_schema.py`'s stamp-and-skip shortcut, which never
+runs `7a3e8b1d9c4f.upgrade()` either. The genesis migration is the first
+thing that ever actually executes it end to end. Confirmed empirically
+against the real dev database before touching anything:
+`SELECT conname, confdeltype FROM pg_constraint WHERE conrelid IN
+('audit_logs'::regclass,'case_notes'::regclass) AND contype='f'` returned
+`confdeltype = 'a'` (NO ACTION, i.e. no `ondelete`) for all four
+constraints, and both columns accept NULL — matching the models, not the
+migration text.
+
+Fixed with a **new, additive migration** (`64fc2b276e5a`, head), not an
+edit to `7a3e8b1d9c4f` — same non-destructive principle as the genesis fix
+itself. Both operations in it are safe no-ops on every database that
+matches the models (which, per the above, is every real database that
+currently exists): dropping a `NOT NULL` that isn't there, or an
+`ondelete` clause that isn't there, changes nothing on the wire beyond a
+constraint being dropped and recreated identically.
+
+### 1.7 Verification actually performed
+
+All commands below were run against this repository's real Docker stack
+(`docker compose exec backend ...` / `docker compose exec postgres ...`),
+2026-09-19/20.
+
+1. **Reproduced the original failure first**, before any fix: `alembic
+   upgrade head` against a freshly created, genuinely empty database
+   failed with `UndefinedTableError: relation "investigation_cases" does
+   not exist` at `cba64ddf4a02` — the exact failure X-5 describes.
+2. **Derivation validated mechanically**: built one database via
+   `tests/support/baseline_schema.py`'s `create_baseline_schema()`
+   directly (known-good, independently verified), and a second via the new
+   genesis migration followed by the real `upgrade()` of every migration
+   from `f070db4817a2` through `7a3e8b1d9c4f`, invoked through real Alembic
+   (`command.upgrade`, temp `script_location`, not a hand-rolled op-proxy
+   shim). Reflected both databases' full schema (columns, types,
+   nullability, indexes, foreign keys, primary keys) and diffed —  found
+   the two nullable/FK mismatches described in 1.6, fixed them, re-ran:
+   **zero differences**.
+3. **Fresh-install path, real repo files, real command**: `alembic upgrade
+   head` against a new empty database, using the actual repository (not a
+   temp copy) → succeeded, ran all 12 migrations from genesis to
+   `64fc2b276e5a` in order, zero errors.
+4. **Schema matches ORM metadata**: `compare_metadata()` against that
+   freshly migrated database → **0 diffs**.
+5. **Idempotence**: ran `alembic upgrade head` again on the
+   already-migrated database → no operations, no error, `alembic current`
+   still reports `64fc2b276e5a (head)`.
+6. **Existing-installation safety, using real data, not a synthetic
+   fixture**: `pg_dump`'d the actual dev database (27 users, 96 cases, 295
+   events, 2 audit logs, 524 agent executions), restored it into a
+   throwaway copy, confirmed the copy's row counts and its
+   pre-migration `alembic_version` (`e5f6a7b8c9d0`) matched the original
+   exactly, then ran `alembic upgrade head` on the **copy**. Result: only
+   the one new migration (`64fc2b276e5a`) ran — genesis was correctly
+   never re-visited — row counts identical after (27/96/295/2/0/524),
+   `compare_metadata()` → 0 diffs, FK `confdeltype` now `'a'` on all four
+   constraints (unchanged from before — confirms the fix was a real no-op
+   for this database), and running `alembic upgrade head` a second time on
+   the copy was a no-op.
+7. **Application boot**: started the real FastAPI app (`TestClient(app)`,
+   real `startup_event()` lifespan, not a mock) against the freshly
+   migrated empty database → `GET /health` → `200`, `{"status": "ok"}`,
+   `postgres: "connected; schema at migration head 64fc2b276e5a"`.
+8. **Applied to the real dev database**, after all of the above passed and
+   a fresh `pg_dump` backup was taken (`backups/yarox_pre_x5_migration_*.dump`):
+   restarted the `backend` container, whose entrypoint runs
+   `python -m scripts.migrate` before `uvicorn` — logs show `Running
+   upgrade e5f6a7b8c9d0 -> 64fc2b276e5a` and `[migrate] database schema
+   ready (upgraded)`. Row counts after: identical to before
+   (27/96/295/2/0/524). `GET /health` on the live stack:
+   `"schema at migration head 64fc2b276e5a"`.
+9. **Full backend test suite**: `docker compose exec backend pytest -q
+   tests/` → **265 passed** (262 baseline + 3 new in
+   `test_migration_genesis.py`), run 3 times consecutively, zero flakes.
+10. **Regression tests confirmed to genuinely discriminate**: temporarily
+    reverted (`git stash` the one-line `down_revision` change and
+    `scripts/migrate.py`; deleted the two new migration files) and re-ran
+    — `test_migration_genesis.py`'s 3 tests and
+    `test_schema_bootstrap.py::test_bootstrap_builds_empty_database_at_head`
+    **failed** exactly as expected; restored, they pass again.
+11. **All throwaway databases and scratch files cleaned up** after
+    validation; the real dev database and its data were never at risk
+    (every destructive experiment ran against a disposable copy) except
+    for the final, deliberate, backed-up, already-proven-safe application
+    to the real dev database in step 8.
+
+### 1.8 Regression tests added
+
+`backend/tests/test_migration_genesis.py` (3 tests):
+- `test_alembic_upgrade_head_builds_a_genuinely_empty_database` — the core
+  regression test. Pure `alembic upgrade head` against zero tables, no
+  `bootstrap()`, no `create_all`. Fails with the original
+  `UndefinedTableError` if the genesis migration or the `down_revision`
+  repoint is reverted.
+- `test_genesis_is_the_sole_root_and_the_chain_to_head_is_linear` —
+  structural guard: exactly one revision with `down_revision=None`, exactly
+  one head, every revision file reachable on that one path. Catches an
+  accidentally reintroduced second root or a branch.
+- `test_database_stamped_exactly_at_genesis_upgrades_cleanly_through_full_chain`
+  — proves the genesis migration's downstream compatibility with every
+  migration after it (not just the empty-DB entry point).
+
+Plus `backend/tests/test_schema_bootstrap.py::test_bootstrap_builds_empty_database_at_head`,
+updated in place, which — now that the `create_all` fallback is gone —
+independently re-proves the same fix through the `bootstrap()` wrapper
+every real deployment actually calls.
 
 ---
 
@@ -281,10 +427,11 @@ blocking any other phase.
 
 ## Summary
 
-| Item | Action taken in this document | Action proposed for later, pending review |
+| Item | Action taken | Status |
 |---|---|---|
-| 5 broken migration files | None — not touched | Insert one new genesis migration + change one line in `f070db4817a2`; full verification plan in 1.5 |
-| Dev-data contamination (X-7) | Inventoried, backup commands documented | Backup, then purge per the precise criterion in 2.3 — needs explicit go-ahead |
+| 5 originally-broken migration files | Not touched — 0 deletions, 0 rewrites | Unchanged, as required |
+| X-5 (fresh-install `alembic upgrade head`) | **Fixed**: genesis migration + one-line repoint in `f070db4817a2` + a second, unrelated FK/nullable fix found while validating (`64fc2b276e5a`) + `scripts/migrate.py`'s `create_all` fallback removed | **DONE** — see 1.5-1.8 for exact files, verification, and results |
+| Dev-data contamination (X-7) | Inventoried, backup commands documented | Still PROPOSAL — backup, then purge per the precise criterion in 2.3, needs explicit go-ahead |
 | `backend/yarox.db` | Corrected: already tracked, not untracked | Optional `git rm`, no backup needed |
 | `test_ws.py` | Inventoried | Optional delete (superseded by real tests) or promote to `tests/` |
-| Two untracked videos (259 MB) | Inventoried, backup commands documented | Back up externally; keep/track/delete decision deferred |
+| Two untracked videos (259 MB) | Inventoried, backup commands documented | Still PROPOSAL — back up externally; keep/track/delete decision deferred |

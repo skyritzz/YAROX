@@ -1,9 +1,20 @@
 """Phase 2 Models
 
 Revision ID: f070db4817a2
-Revises: 
+Revises: 6b66f0fdb4f3
 Create Date: 2026-07-04 10:41:02.040630
 
+X-5 fix: this was the root of the chain (``down_revision = None``) until a
+genesis migration (``6b66f0fdb4f3``) was added ahead of it to create the
+foundational tables this migration and the ones after it assume already
+exist — Alembic was adopted onto this project after that schema already
+existed via ``Base.metadata.create_all()``, so nothing in the original chain
+ever created it. See ``6b66f0fdb4f3``'s own docstring for the full account
+and ``docs/MIGRATION_REMEDIATION_PROPOSAL.md`` for the proposal this
+implements. This is the only change to this file: content, revision id, and
+position in the chain are otherwise unchanged, so any database already
+stamped at or after this revision is unaffected (Alembic never re-walks into
+an ancestor of a database's current position).
 """
 from typing import Sequence, Union
 
@@ -13,7 +24,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = 'f070db4817a2'
-down_revision: Union[str, None] = None
+down_revision: Union[str, None] = '6b66f0fdb4f3'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
