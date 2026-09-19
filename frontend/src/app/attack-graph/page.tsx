@@ -14,7 +14,7 @@ import {
 import "@xyflow/react/dist/style.css"
 import { useMemo, useState } from "react"
 import dagre from "dagre"
-import { UserNode, HostNode, ProcessNode, IPNode, WiderArcEdge } from "@/components/graph/CustomNodes"
+import { UserNode, HostNode, ProcessNode, IPNode } from "@/components/graph/CustomNodes"
 
 const nodeTypes = {
   USER: UserNode,
@@ -22,13 +22,6 @@ const nodeTypes = {
   PROCESS: ProcessNode,
   IP: IPNode,
 }
-
-const edgeTypes = {
-  widerArc: WiderArcEdge,
-}
-
-// Exactly the nodes on the critical path, powershell is omitted.
-const CRITICAL_LABELS = ["192.168.1.55", "asmith", "DB-SERVER-02", "WmiPrvSE.exe"]
 
 export default function AttackGraphPage() {
   const { data: graphData, isLoading } = useQuery({
@@ -63,65 +56,46 @@ export default function AttackGraphPage() {
 
     dagre.layout(dagreGraph)
 
+    // The backend's entity graph (GET /investigations/graph/entities) does not carry
+    // any severity, criticality or "attack path" signal today (see docs/YAROX_REALITY_AUDIT.md
+    // A-5) — it is the full set of entities and relationships across all cases. Every
+    // node and edge is therefore rendered identically rather than inventing a highlighted
+    // "critical path" from demo data labels.
     graphData.nodes.forEach((n: any) => {
       const nodeWithPosition = dagreGraph.node(n.id)
-      const isCritical = CRITICAL_LABELS.includes(n.label)
-      
-      let xPos = nodeWithPosition.x - 125
-      let yPos = nodeWithPosition.y - 50
-
-      // Add breathing room to the 4th column so diagonal edges clear the 3rd column
-      if (n.label === "DB-SERVER-02" || n.label === "WmiPrvSE.exe") {
-        xPos += 180
-      }
-
       newNodes.push({
         id: n.id,
         type: n.type,
-        position: { x: xPos, y: yPos },
-        data: { label: n.label, isCritical, type: n.type },
+        position: { x: nodeWithPosition.x - 125, y: nodeWithPosition.y - 50 },
+        data: { label: n.label, type: n.type },
       })
     })
 
     graphData.edges.forEach((e: any) => {
-      const sourceNode = graphData.nodes.find((n:any)=>n.id===e.source)
-      const targetNode = graphData.nodes.find((n:any)=>n.id===e.target)
-      const isCriticalEdge = CRITICAL_LABELS.includes(sourceNode?.label) && CRITICAL_LABELS.includes(targetNode?.label)
-      
-      // Use the wider arc edge for the specific diagonal jump to clear the admin column
-      const isDiagonalJump = sourceNode?.label === "asmith" && targetNode?.label === "DB-SERVER-02"
-
       newEdges.push({
         id: e.id,
         source: e.source,
         target: e.target,
-        type: isDiagonalJump ? "widerArc" : "default",
-        animated: isCriticalEdge,
         label: e.label,
-        style: isCriticalEdge ? {
-          stroke: "var(--severity-critical)",
-          strokeWidth: 3,
-          opacity: 1,
-          filter: "drop-shadow(0 0 4px var(--severity-critical))"
-        } : {
+        style: {
           stroke: "var(--border-default)",
           strokeWidth: 1.5,
           opacity: 0.8,
         },
         labelStyle: {
-          fill: isCriticalEdge ? "var(--severity-critical)" : "var(--text-secondary)",
+          fill: "var(--text-secondary)",
           fontSize: 12,
           fontWeight: 700,
           letterSpacing: "0.02em",
         },
         labelBgStyle: {
           fill: "rgba(255,255,255,0.95)",
-          stroke: isCriticalEdge ? "var(--severity-critical)" : "var(--border-default)",
+          stroke: "var(--border-default)",
           strokeWidth: 1,
         },
         labelBgBorderRadius: 16,
         labelBgPadding: [16, 8] as [number, number],
-        markerEnd: { type: MarkerType.ArrowClosed, color: isCriticalEdge ? "var(--severity-critical)" : "var(--border-default)" },
+        markerEnd: { type: MarkerType.ArrowClosed, color: "var(--border-default)" },
       })
     })
 
@@ -140,6 +114,19 @@ export default function AttackGraphPage() {
     )
   }
 
+  if (!graphData || graphData.nodes.length === 0) {
+    return (
+      <div className="flex-1 flex flex-col items-center justify-center text-center px-8">
+        <h1 className="text-[24px] font-bold tracking-tight text-[var(--text-primary)] mb-2">
+          Attack Graph
+        </h1>
+        <p className="text-sm text-[var(--text-secondary)]">
+          Not available — no entity relationships have been extracted from investigations yet.
+        </p>
+      </div>
+    )
+  }
+
   return (
     <div className="flex-1 flex h-full overflow-hidden relative" style={{
       background: "radial-gradient(circle at center, var(--background) 0%, #f1f3f7 100%)"
@@ -150,7 +137,7 @@ export default function AttackGraphPage() {
           Attack Graph
         </h1>
         <p className="text-sm text-[var(--text-secondary)] mt-1 drop-shadow-sm font-medium">
-          Entity relationships and threat hierarchy
+          Entity relationships across all investigations
         </p>
       </div>
 
@@ -159,7 +146,6 @@ export default function AttackGraphPage() {
         nodes={nodes}
         edges={edges}
         nodeTypes={nodeTypes}
-        edgeTypes={edgeTypes}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         fitView
@@ -192,7 +178,7 @@ export default function AttackGraphPage() {
             maskColor="rgba(255, 255, 255, 0.4)"
             nodeBorderRadius={4}
             nodeStrokeWidth={0}
-            nodeColor={(n: any) => n.data?.isCritical ? "var(--severity-critical)" : "#94a3b8"}
+            nodeColor="#94a3b8"
           />
         )}
       </ReactFlow>

@@ -4,7 +4,7 @@ import hmac
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Union
 import jwt
-from fastapi import Depends, HTTPException, status, Security
+from fastapi import Depends, HTTPException, Request, status, Security
 from fastapi.security import OAuth2PasswordBearer, HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -12,6 +12,9 @@ from sqlalchemy.future import select
 from core.config import settings
 from database.session import get_db
 from models.user import User, UserRole
+
+# Browser sessions use an httpOnly cookie; machine clients use the bearer header
+SESSION_COOKIE_NAME = "yarox_session"
 
 # Standard bearer auth for API endpoints
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=False)
@@ -87,17 +90,22 @@ def decode_access_token(token: str) -> dict:
         )
 
 async def get_current_user(
+    request: Request,
     auth_header: Optional[HTTPAuthorizationCredentials] = Depends(http_bearer),
     token_query: Optional[str] = None,
     db: AsyncSession = Depends(get_db)
 ) -> User:
     """
-    Extracts and validates the current user from Bearer header or fallback token.
+    Resolves the current user from, in order:
+
+    1. the ``yarox_session`` httpOnly cookie — used by the browser UI, so the token is
+       never readable from JavaScript and never appears in a URL;
+    2. an ``Authorization: Bearer`` header — used by machine clients, scripts and tests.
     """
-    token = None
-    if auth_header and auth_header.credentials:
+    token = request.cookies.get(SESSION_COOKIE_NAME) if request is not None else None
+    if not token and auth_header and auth_header.credentials:
         token = auth_header.credentials
-    elif token_query:
+    elif not token and token_query:
         token = token_query
 
     if not token:

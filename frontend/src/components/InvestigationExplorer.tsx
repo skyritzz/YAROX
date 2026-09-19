@@ -194,11 +194,19 @@ export function InvestigationExplorer() {
                                     <div className="grid grid-cols-2 gap-4">
                                         <div className="bg-white/5 p-4 rounded-xl border border-white/10">
                                             <div className="text-xs text-gray-400 mb-1">Total Duration</div>
-                                            <div className="text-xl font-mono">{(explData.metrics.total_execution_time_ms / 1000).toFixed(1)}s</div>
+                                            <div className="text-xl font-mono">
+                                                {typeof explData.metrics.total_execution_time_ms === "number"
+                                                    ? `${(explData.metrics.total_execution_time_ms / 1000).toFixed(1)}s`
+                                                    : <span className="text-sm text-gray-500">Not available</span>}
+                                            </div>
                                         </div>
                                         <div className="bg-white/5 p-4 rounded-xl border border-white/10">
                                             <div className="text-xs text-gray-400 mb-1">Confidence</div>
-                                            <div className="text-xl font-bold text-green-400">{(explData.execution.confidence * 100).toFixed(0)}%</div>
+                                            <div className="text-xl font-bold text-green-400">
+                                                {typeof explData.execution.confidence === "number"
+                                                    ? `${(explData.execution.confidence * 100).toFixed(0)}%`
+                                                    : <span className="text-sm font-normal text-gray-500">Not available</span>}
+                                            </div>
                                         </div>
                                         <div className="bg-white/5 p-4 rounded-xl border border-white/10">
                                             <div className="text-xs text-gray-400 mb-1">Tool Calls</div>
@@ -313,7 +321,7 @@ export function InvestigationExplorer() {
                                                 <div className="font-bold text-orange-400 font-mono text-sm">{tool.tool_name}</div>
                                                 <div className="flex gap-3 text-xs font-mono">
                                                     <span className={tool.status === "Failed" ? "text-red-400" : "text-green-400"}>{tool.status || "Completed"}</span>
-                                                    <span className="text-gray-500">{tool.duration_ms?.toFixed(0)}ms</span>
+                                                    <span className="text-gray-500">{typeof tool.duration_ms === "number" ? `${tool.duration_ms.toFixed(0)}ms` : "Not available"}</span>
                                                 </div>
                                             </div>
                                             <div className="p-4 space-y-4">
@@ -381,11 +389,19 @@ export function InvestigationExplorer() {
                                     <div className="bg-white/5 p-5 rounded-xl border border-white/10 grid grid-cols-2 gap-4">
                                         <div>
                                             <div className="text-xs text-gray-500">LLM Generation Time</div>
-                                            <div className="text-lg font-mono text-gray-200">{(explData.metrics.llm_execution_time_ms / 1000).toFixed(2)}s</div>
+                                            <div className="text-lg font-mono text-gray-200">
+                                                {typeof explData.metrics.llm_execution_time_ms === "number"
+                                                    ? `${(explData.metrics.llm_execution_time_ms / 1000).toFixed(2)}s`
+                                                    : <span className="text-sm text-gray-500">Not available</span>}
+                                            </div>
                                         </div>
                                         <div>
                                             <div className="text-xs text-gray-500">Tool Execution Time</div>
-                                            <div className="text-lg font-mono text-gray-200">{(explData.metrics.tool_execution_time_ms / 1000).toFixed(2)}s</div>
+                                            <div className="text-lg font-mono text-gray-200">
+                                                {typeof explData.metrics.tool_execution_time_ms === "number"
+                                                    ? `${(explData.metrics.tool_execution_time_ms / 1000).toFixed(2)}s`
+                                                    : <span className="text-sm text-gray-500">Not available</span>}
+                                            </div>
                                         </div>
                                     </div>
                                 </div>

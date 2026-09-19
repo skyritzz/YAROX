@@ -14,7 +14,9 @@ import {
   ChevronLeft,
   ChevronRight,
   Shield,
+  LogOut,
 } from "lucide-react";
+import { useAuth } from "@/context/AuthContext";
 
 const navItems = [
   { href: "/", label: "Command Center", icon: Home },
@@ -32,6 +34,7 @@ const bottomItems = [
 export default function Sidebar() {
   const pathname = usePathname();
   const [collapsed, setCollapsed] = useState(false);
+  const { user, logout } = useAuth();
 
   const isActive = (href: string) => {
     if (href === "/") return pathname === "/";
@@ -108,6 +111,28 @@ export default function Sidebar() {
             </Link>
           );
         })}
+
+        {/* Signed-in user + sign out */}
+        {user && (
+          <div className={`px-3 py-2 ${collapsed ? "flex justify-center" : ""}`}>
+            {!collapsed && (
+              <div className="mb-1.5 overflow-hidden">
+                <div className="text-xs font-semibold text-[var(--text-primary)] truncate">{user.email}</div>
+                <div className="text-[10px] text-[var(--text-secondary)]">{user.role}</div>
+              </div>
+            )}
+            <button
+              onClick={() => logout()}
+              title={collapsed ? "Sign out" : undefined}
+              className={`flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-xl transition-all duration-150 w-full text-[var(--text-secondary)] hover:bg-[var(--muted)] hover:text-[var(--text-primary)] ${
+                collapsed ? "justify-center px-0" : ""
+              }`}
+            >
+              <LogOut className="w-[18px] h-[18px] shrink-0" />
+              {!collapsed && <span>Sign out</span>}
+            </button>
+          </div>
+        )}
 
         {/* Collapse toggle */}
         <button

@@ -22,8 +22,6 @@ const stages = [
     label: "Security Event",
     icon: "⚡",
     description: "Incoming telemetry",
-    avgDuration: "< 1s",
-    lastRun: "Active",
     color: "var(--text-secondary)",
     bg: "var(--muted)",
   },
@@ -32,8 +30,6 @@ const stages = [
     label: "Triage Agent",
     icon: "🛡️",
     description: "Classifies & prioritizes",
-    avgDuration: "~2s",
-    lastRun: "Active",
     color: "var(--agent-triage)",
     bg: "var(--agent-triage-bg)",
   },
@@ -42,8 +38,6 @@ const stages = [
     label: "Timeline Analyst",
     icon: "🕐",
     description: "Reconstructs sequence",
-    avgDuration: "~3s",
-    lastRun: "Active",
     color: "var(--agent-timeline)",
     bg: "var(--agent-timeline-bg)",
   },
@@ -52,8 +46,6 @@ const stages = [
     label: "Threat Intel Agent",
     icon: "🔍",
     description: "MITRE mapping & context",
-    avgDuration: "~4s",
-    lastRun: "Active",
     color: "var(--agent-threat-intel)",
     bg: "var(--agent-threat-intel-bg)",
   },
@@ -62,8 +54,6 @@ const stages = [
     label: "SOC Lead Agent",
     icon: "🧠",
     description: "Synthesizes & decides",
-    avgDuration: "~3s",
-    lastRun: "Active",
     color: "var(--agent-soc-lead)",
     bg: "var(--agent-soc-lead-bg)",
   },
@@ -72,8 +62,6 @@ const stages = [
     label: "Final Report",
     icon: "📄",
     description: "Structured deliverable",
-    avgDuration: "~1s",
-    lastRun: "Complete",
     color: "var(--success)",
     bg: "var(--success-bg)",
   },
@@ -112,20 +100,6 @@ const initialNodes: any[] = stages.map((stage, idx) => ({
         </div>
         <div className="text-[10px] text-[var(--text-secondary)] mb-2">
           {stage.description}
-        </div>
-        <div className="flex items-center justify-between">
-          <span className="text-[10px] font-mono text-[var(--text-secondary)]">
-            {stage.avgDuration}
-          </span>
-          <span
-            className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full"
-            style={{
-              backgroundColor: stage.bg,
-              color: stage.color,
-            }}
-          >
-            {stage.lastRun}
-          </span>
         </div>
       </div>
     ),
@@ -228,6 +202,10 @@ export default function AgentWorkflowPage() {
         <p className="text-sm text-[var(--text-secondary)] mt-1">
           AI investigation pipeline — event intake through final report
         </p>
+        <p className="text-xs text-[var(--text-secondary)] mt-1 italic">
+          Static architecture diagram. For real, per-investigation agent timings see an
+          investigation's detail view (Not available here — this page shows structure, not live data).
+        </p>
       </div>
 
       {/* Pipeline legend */}
@@ -239,11 +217,6 @@ export default function AgentWorkflowPage() {
         <div className="flex items-center gap-1.5">
           <div className="w-6 h-0.5 bg-[var(--success)] rounded-full" />
           <span className="text-[var(--text-secondary)]">Completed</span>
-        </div>
-        <div className="flex items-center gap-1.5 ml-auto">
-          <span className="text-[var(--text-secondary)]">
-            Avg total pipeline: ~13s
-          </span>
         </div>
       </div>
 

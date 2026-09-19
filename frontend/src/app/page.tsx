@@ -20,63 +20,28 @@ import {
 import { format } from "date-fns"
 
 /* ================================================================
-   Agent demo data — task strings are static/demo, 
-   confidence and status blend from real API data
+   Agent identity. `dbName` matches AgentExecution.agent_name in the backend and is
+   used to look up each agent's real recent activity from /dashboard/stats below.
+   Everything shown on a card is either static identity (name/icon) or derived from
+   that real activity feed — no task text or status is invented.
    ================================================================ */
 const AGENTS = [
-  {
-    id: "triage",
-    name: "Triage Agent",
-    dbName: "Triage Analyst",
-    icon: Shield,
-    color: "var(--agent-triage)",
-    bg: "var(--agent-triage-bg)",
-    demoTasks: {
-      active: "Classifying incoming security event",
-      idle: "Standing by for new events",
-    },
-    statusLabel: { active: "Investigating", idle: "Idle" },
-  },
-  {
-    id: "timeline",
-    name: "Timeline Analyst",
-    dbName: "Forensic Timeline Analyst",
-    icon: Clock,
-    color: "var(--agent-timeline)",
-    bg: "var(--agent-timeline-bg)",
-    demoTasks: {
-      active: "Reconstructing login sequence for jdoe",
-      idle: "Awaiting evidence",
-    },
-    statusLabel: { active: "Building timeline", idle: "Idle" },
-  },
-  {
-    id: "threat-intel",
-    name: "Threat Intel Agent",
-    dbName: "Threat Intel Analyst",
-    icon: Search,
-    color: "var(--agent-threat-intel)",
-    bg: "var(--agent-threat-intel-bg)",
-    demoTasks: {
-      active: "Correlating with MITRE ATT&CK T1110",
-      idle: "Waiting for triage output",
-    },
-    statusLabel: { active: "Mapping ATT&CK", idle: "Idle" },
-  },
-  {
-    id: "soc-lead",
-    name: "SOC Lead Agent",
-    dbName: "SOC Lead",
-    icon: Brain,
-    color: "var(--agent-soc-lead)",
-    bg: "var(--agent-soc-lead-bg)",
-    demoTasks: {
-      active: "Drafting executive summary for Case #4A2F",
-      idle: "All reports finalized",
-    },
-    statusLabel: { active: "Drafting report", idle: "Idle" },
-  },
+  { id: "triage", name: "Triage Agent", dbName: "Triage Analyst", icon: Shield, color: "var(--agent-triage)", bg: "var(--agent-triage-bg)" },
+  { id: "timeline", name: "Timeline Analyst", dbName: "Forensic Timeline Analyst", icon: Clock, color: "var(--agent-timeline)", bg: "var(--agent-timeline-bg)" },
+  { id: "threat-intel", name: "Threat Intel Agent", dbName: "Threat Intel Analyst", icon: Search, color: "var(--agent-threat-intel)", bg: "var(--agent-threat-intel-bg)" },
+  { id: "soc-lead", name: "SOC Lead Agent", dbName: "SOC Lead", icon: Brain, color: "var(--agent-soc-lead)", bg: "var(--agent-soc-lead-bg)" },
 ]
+
+// An agent is shown as "Active" only if the real activity feed recorded a reasoning
+// step from it within this window; this is a recency signal, not a live process check.
+const AGENT_RECENT_WINDOW_MS = 5 * 60 * 1000
+
+function formatRelativeTime(timestamp: string): string {
+  const diff = Math.round((Date.now() - new Date(timestamp).getTime()) / 1000)
+  if (diff < 60) return `${diff}s ago`
+  if (diff < 3600) return `${Math.round(diff / 60)}m ago`
+  return `${Math.round(diff / 3600)}h ago`
+}
 
 /* ================================================================
    Severity helpers
@@ -87,26 +52,6 @@ const severityConfig: Record<string, { color: string; bg: string; border: string
   MEDIUM: { color: "var(--severity-medium)", bg: "var(--severity-medium-bg)", border: "var(--severity-medium-border)" },
   LOW: { color: "var(--severity-low)", bg: "var(--severity-low-bg)", border: "var(--severity-low-border)" },
   INFO: { color: "var(--severity-info)", bg: "var(--severity-info-bg)", border: "var(--severity-info-border)" },
-}
-
-/* ================================================================
-   Animated number component
-   ================================================================ */
-function AnimatedNumber({ value }: { value: number }) {
-  const [display, setDisplay] = useState(0)
-  useEffect(() => {
-    const duration = 600
-    const start = performance.now()
-    const from = display
-    const step = (now: number) => {
-      const progress = Math.min((now - start) / duration, 1)
-      setDisplay(Math.round(from + (value - from) * progress))
-      if (progress < 1) requestAnimationFrame(step)
-    }
-    requestAnimationFrame(step)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [value])
-  return <span>{display}</span>
 }
 
 /* ================================================================
@@ -144,6 +89,17 @@ export default function CommandCenter() {
       return data
     },
     refetchInterval: 10000,
+  })
+
+  // Real ingestion gateway counters (GET /events/ingest/metrics), used to back the
+  // "Live Gateway" badge honestly instead of a static "Active" label.
+  const { data: ingestMetrics } = useQuery({
+    queryKey: ["ingestMetrics"],
+    queryFn: async () => {
+      const { data } = await api.get("/events/ingest/metrics")
+      return data
+    },
+    refetchInterval: 5000,
   })
 
   // Replay status for embedded controls
@@ -212,8 +168,24 @@ export default function CommandCenter() {
     (i: any) => i.severity === "CRITICAL"
   ).length || 0
 
-  // Determine which agents are "active" based on real replay status
-  const activeAgentCount: number = isRunning ? 3 : 0
+  // Real per-agent activity: the most recent reasoning step recorded for each agent
+  // (from /dashboard/stats.recent_activity, itself read from agent_reasoning_steps).
+  const agentActivity = new Map<string, any>()
+  for (const activity of stats?.recent_activity || []) {
+    if (activity.agent_name && !agentActivity.has(activity.agent_name)) {
+      agentActivity.set(activity.agent_name, activity)
+    }
+  }
+  const isAgentRecent = (dbName: string) => {
+    const activity = agentActivity.get(dbName)
+    return !!activity && Date.now() - new Date(activity.timestamp).getTime() < AGENT_RECENT_WINDOW_MS
+  }
+  const activeAgentCount = AGENTS.filter((a) => isAgentRecent(a.dbName)).length
+
+  const ingestLastEventMs = ingestMetrics?.last_event_timestamp
+    ? Date.now() - new Date(ingestMetrics.last_event_timestamp).getTime()
+    : null
+  const ingestIsRecent = ingestLastEventMs !== null && ingestLastEventMs < AGENT_RECENT_WINDOW_MS
 
   return (
     <div className="flex-1 overflow-y-auto">
@@ -235,8 +207,8 @@ export default function CommandCenter() {
               {activeCases} active investigation{activeCases !== 1 ? "s" : ""}
               {" · "}
               {activeAgentCount > 0
-                ? `${activeAgentCount} agent${activeAgentCount !== 1 ? "s" : ""} thinking`
-                : "All agents idle"}
+                ? `${activeAgentCount} agent${activeAgentCount !== 1 ? "s" : ""} active`
+                : "No recent agent activity"}
               {stats?.recent_activity?.length > 0 &&
                 ` · Last event ${(() => {
                   const last = stats.recent_activity[0]?.timestamp
@@ -348,10 +320,29 @@ export default function CommandCenter() {
             </div>
           )}
 
-          {/* Live Telemetry Ingestion Gateway Status Badge */}
-          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50/80 border border-emerald-200 text-xs font-medium text-emerald-700">
-            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-            Live Gateway: Active
+          {/* Live Telemetry Ingestion Gateway Status Badge — backed by GET /events/ingest/metrics */}
+          <div
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs font-medium ${
+              ingestMetrics === undefined
+                ? "bg-[var(--muted)] border-[var(--border-default)] text-[var(--text-secondary)]"
+                : ingestIsRecent
+                  ? "bg-emerald-50/80 border-emerald-200 text-emerald-700"
+                  : "bg-[var(--muted)] border-[var(--border-default)] text-[var(--text-secondary)]"
+            }`}
+            title={
+              ingestMetrics
+                ? `${ingestMetrics.events_accepted} accepted, ${ingestMetrics.events_rejected} rejected since this backend process started`
+                : undefined
+            }
+          >
+            <span className={`w-2 h-2 rounded-full ${ingestIsRecent ? "bg-emerald-500 animate-pulse" : "bg-[var(--border-default)]"}`} />
+            {ingestMetrics === undefined
+              ? "Ingestion Gateway: Not available"
+              : ingestIsRecent
+                ? `Ingestion Gateway: Active (${formatRelativeTime(ingestMetrics.last_event_timestamp)})`
+                : ingestMetrics.last_event_timestamp
+                  ? `Ingestion Gateway: Idle (last event ${formatRelativeTime(ingestMetrics.last_event_timestamp)})`
+                  : "Ingestion Gateway: No events yet"}
           </div>
         </div>
 
@@ -363,13 +354,12 @@ export default function CommandCenter() {
             AI Security Team
           </h2>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            {AGENTS.map((agent, idx) => {
-              // First 3 agents active when replay running, SOC Lead active when cases exist
-              const agentActive =
-                isRunning && (idx < 3 || (investigations?.length || 0) > 0)
-              const confidence =
-                stats?.average_confidence ??
-                (agentActive ? 87 : 0)
+            {AGENTS.map((agent) => {
+              // Real signal: the agent's most recent recorded reasoning step (if any),
+              // and whether that step happened within the last 5 minutes. No task text,
+              // status or confidence number is invented when this is absent.
+              const activity = agentActivity.get(agent.dbName)
+              const agentActive = isAgentRecent(agent.dbName)
 
               return (
                 <motion.div
@@ -398,38 +388,27 @@ export default function CommandCenter() {
                       <div className="text-sm font-semibold text-[var(--text-primary)] truncate">
                         {agent.name}
                       </div>
-                      <div className="text-xs text-[var(--text-secondary)] truncate">
-                        {agentActive
-                          ? agent.demoTasks.active
-                          : agent.demoTasks.idle}
+                      <div className="text-xs text-[var(--text-secondary)] truncate" title={activity?.message}>
+                        {activity ? activity.message : "No recent activity"}
                       </div>
                     </div>
                   </div>
 
-                  {/* Confidence bar */}
+                  {/* Confidence: no live per-agent confidence signal is exposed on the
+                      dashboard today, so this is stated rather than fabricated. */}
                   <div className="mb-3">
                     <div className="flex justify-between text-xs mb-1">
                       <span className="text-[var(--text-secondary)]">
                         Confidence
                       </span>
-                      <span className="font-mono font-semibold text-[var(--text-primary)]">
-                        <AnimatedNumber value={agentActive ? confidence : 0} />%
+                      <span className="font-mono text-[10px] uppercase tracking-wide text-[var(--text-secondary)]">
+                        Not available
                       </span>
                     </div>
-                    <div className="h-1.5 bg-[var(--muted)] rounded-full overflow-hidden">
-                      <motion.div
-                        className="h-full rounded-full"
-                        style={{ backgroundColor: agent.color }}
-                        initial={{ width: 0 }}
-                        animate={{
-                          width: `${agentActive ? confidence : 0}%`,
-                        }}
-                        transition={{ duration: 0.8, ease: "easeOut" }}
-                      />
-                    </div>
+                    <div className="h-1.5 bg-[var(--muted)] rounded-full overflow-hidden" />
                   </div>
 
-                  {/* Status pill */}
+                  {/* Status pill: derived from real recent-activity recency */}
                   <div
                     className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium"
                     style={{
@@ -446,8 +425,10 @@ export default function CommandCenter() {
                       />
                     )}
                     {agentActive
-                      ? agent.statusLabel.active
-                      : agent.statusLabel.idle}
+                      ? `Active · ${formatRelativeTime(activity.timestamp)}`
+                      : activity
+                        ? `Idle · last active ${formatRelativeTime(activity.timestamp)}`
+                        : "Idle"}
                   </div>
                 </motion.div>
               )

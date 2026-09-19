@@ -112,6 +112,7 @@ async def test_invalid_jwt_rejected():
 async def test_unauthorized_websocket_rejected():
     mock_ws = MagicMock()
     mock_ws.close = AsyncMock()
+    mock_ws.cookies = {}  # no session cookie and no query token -> must be rejected
     
     from websocket.investigation_ws import websocket_endpoint
     await websocket_endpoint(websocket=mock_ws, case_id=None, token=None)
@@ -129,6 +130,9 @@ async def test_authorized_websocket_accepted():
     mock_ws = MagicMock()
     mock_ws.accept = AsyncMock()
     mock_ws.receive_text = AsyncMock(side_effect=Exception("Client closed"))
+    # No session cookie present: authorization must fall back to the query-param token
+    # (used by programmatic/non-browser clients; the browser UI uses the httpOnly cookie).
+    mock_ws.cookies = {}
     
     from websocket.investigation_ws import websocket_endpoint
     await websocket_endpoint(websocket=mock_ws, case_id=None, token=token)

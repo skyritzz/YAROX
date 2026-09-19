@@ -1,16 +1,17 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
 from database.session import get_db
 from models.user import User, UserRole
 from schemas.auth import LoginRequest, TokenResponse, UserResponse, RegisterUserRequest
-from core.auth import verify_password, hash_password, create_access_token, get_current_user, require_admin
+from core.auth import SESSION_COOKIE_NAME, verify_password, hash_password, create_access_token, get_current_user, require_admin
+from core.config import settings
 
 router = APIRouter()
 
 @router.post("/login", response_model=TokenResponse)
-async def login(request: LoginRequest, db: AsyncSession = Depends(get_db)):
+async def login(request: LoginRequest, response: Response, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(User).where(User.email == request.email.strip().lower()))
     user = result.scalar_one_or_none()
     
@@ -31,6 +32,19 @@ async def login(request: LoginRequest, db: AsyncSession = Depends(get_db)):
         data={"sub": str(user.id), "email": user.email, "role": user.role.value}
     )
     
+    # The browser receives the session as an httpOnly cookie: it is never exposed to
+    # JavaScript and never travels in a URL. The body still carries the token for
+    # machine clients (scripts, tests, integrations) that use the bearer header.
+    response.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=access_token,
+        httponly=True,
+        samesite="lax",
+        secure=settings.ENVIRONMENT.lower() == "production",
+        max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        path="/",
+    )
+
     return TokenResponse(
         access_token=access_token,
         token_type="bearer",
@@ -39,6 +53,13 @@ async def login(request: LoginRequest, db: AsyncSession = Depends(get_db)):
         full_name=user.full_name,
         role=user.role
     )
+
+
+@router.post("/logout")
+async def logout(response: Response):
+    """Clears the browser session cookie."""
+    response.delete_cookie(SESSION_COOKIE_NAME, path="/")
+    return {"message": "Signed out"}
 
 @router.get("/me", response_model=UserResponse)
 async def get_me(current_user: User = Depends(get_current_user)):

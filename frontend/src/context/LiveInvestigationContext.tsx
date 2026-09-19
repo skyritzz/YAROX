@@ -1,6 +1,5 @@
 "use client"
 import React, { createContext, useContext, useEffect, useState, ReactNode } from "react"
-import { getAuthToken } from "@/lib/api"
 
 export interface InvestigationEvent {
     event_id: string;
@@ -27,31 +26,23 @@ export const LiveInvestigationProvider = ({ caseId, children }: { caseId: string
 
     useEffect(() => {
         if (!caseId) return;
-        let ws: WebSocket | null = null;
-        let isCancelled = false;
 
-        async function initWs() {
-            const token = await getAuthToken();
-            if (isCancelled) return;
-            
-            const tokenParam = token ? `&token=${encodeURIComponent(token)}` : '';
-            ws = new WebSocket(`ws://localhost:8000/ws/investigations?case_id=${caseId}${tokenParam}`);
-            
-            ws.onmessage = (event) => {
-                try {
-                    const data = JSON.parse(event.data)
-                    if (data.investigation_id === caseId || data.case_id === caseId) {
-                        setWsEvents((prev) => [...prev, data])
-                    }
-                } catch (err) {}
-            }
+        // The browser sends the httpOnly session cookie automatically on the WebSocket
+        // handshake (see backend/websocket/investigation_ws.py); no token is read from
+        // or passed through JavaScript.
+        const ws = new WebSocket(`ws://localhost:8000/ws/investigations?case_id=${caseId}`);
+
+        ws.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data)
+                if (data.investigation_id === caseId || data.case_id === caseId) {
+                    setWsEvents((prev) => [...prev, data])
+                }
+            } catch (err) {}
         }
 
-        initWs();
-
         return () => {
-            isCancelled = true;
-            if (ws) ws.close();
+            ws.close();
         }
     }, [caseId])
 

@@ -148,16 +148,16 @@ The "Restoration" column is updated as phases complete. `OPEN` = not yet address
 
 | ID | Component | Status | Evidence | File / Symbol | Why it matters | Proposed fix | Restoration |
 |---|---|---|---|---|---|---|---|
-| F-1 | Embedded credentials | FAKE (security) | Auto-login with `analyst@yarox.local` / `YaroxAnalyst2026!` | `lib/api.ts` `getAuthToken` | Credential in client bundle; no real auth | Login page; token only from user login | OPEN |
+| F-1 | Embedded credentials | FAKE (security) | Auto-login with `analyst@yarox.local` / `YaroxAnalyst2026!` | `lib/api.ts` `getAuthToken` | Credential in client bundle; no real auth | Login page; token only from user login | **FIXED (Phase 14a)** — hardcoded credential deleted; real login screen + httpOnly session cookie |
 | F-2 | Report recommended actions | FAKE | 6 hardcoded strings ("Disable compromised user account (jdoe)…", "Block 203.0.113.x…"), comment "demo data blended" | `app/reports/page.tsx` `recommendedActions` | Invented remediation shown as analysis | Render persisted report recommendations | **FIXED (Phase 3)** — reports page renders persisted recommendations with evidence refs; hardcoded list deleted |
-| F-3 | Attack graph critical path | FAKE | `CRITICAL_LABELS = ["192.168.1.55","asmith","DB-SERVER-02","WmiPrvSE.exe"]` and label-specific layout nudges | `app/attack-graph/page.tsx` | Highlights attack path regardless of data | Backend graph; no invented criticality | OPEN |
-| F-4 | Graph node tooltip | FAKE | Every node: "First seen: 2023-10-27 10:01:00 UTC", "Evidence Item" | `components/graph/CustomNodes.tsx` | Fabricated timestamps | Real first/last seen from backend | OPEN |
-| F-5 | Dashboard agent cards | FAKE | `demoTasks` strings ("Reconstructing login sequence for jdoe", "Case #4A2F"); agents shown "active" whenever replay is playing; confidence fallback `87` | `app/page.tsx` `AGENTS`, `agentActive` | Agent activity invented | Derive from running executions | OPEN |
-| F-6 | "N agents thinking" | FAKE | `activeAgentCount = isRunning ? 3 : 0` | `app/page.tsx` | Invented | Count running executions | OPEN |
-| F-7 | "Live Gateway: Active" badge | FAKE | Static JSX | `app/page.tsx` | Invented status | Remove or use health | OPEN |
+| F-3 | Attack graph critical path | FAKE | `CRITICAL_LABELS = ["192.168.1.55","asmith","DB-SERVER-02","WmiPrvSE.exe"]` and label-specific layout nudges | `app/attack-graph/page.tsx` | Highlights attack path regardless of data | Backend graph; no invented criticality | **FIXED (Phase 14a)** — `CRITICAL_LABELS`/`WiderArcEdge` deleted; "Not available" empty state when the backend graph has no entities |
+| F-4 | Graph node tooltip | FAKE | Every node: "First seen: 2023-10-27 10:01:00 UTC", "Evidence Item" | `components/graph/CustomNodes.tsx` | Fabricated timestamps | Real first/last seen from backend | **FIXED (Phase 14a)** — fabricated tooltip and match-percentage badge removed (backend entity graph carries no such fields; confirmed no caller ever passed them) |
+| F-5 | Dashboard agent cards | FAKE | `demoTasks` strings ("Reconstructing login sequence for jdoe", "Case #4A2F"); agents shown "active" whenever replay is playing; confidence fallback `87` | `app/page.tsx` `AGENTS`, `agentActive` | Agent activity invented | Derive from running executions | **FIXED (Phase 14a)** — task text now shows real `recent_activity` message or "No recent activity"; confidence bar replaced with "Not available" (no real per-agent confidence signal exists); status pill derived from real activity recency |
+| F-6 | "N agents thinking" | FAKE | `activeAgentCount = isRunning ? 3 : 0` | `app/page.tsx` | Invented | Count running executions | **FIXED (Phase 14a)** — computed from `stats.recent_activity` within a 5-minute recency window, header now reads "N agent(s) active" |
+| F-7 | "Live Gateway: Active" badge | FAKE | Static JSX | `app/page.tsx` | Invented status | Remove or use health | **FIXED (Phase 14a)** — 3-state badge (Not available / Active with timestamp / Idle) backed by real `GET /events/ingest/metrics`; verified to flip to "Active" after a real `/events/ingest` call and stay honestly at "Idle"/zeros for events delivered via the internal bus (replay), which the ingest endpoint never sees |
 | F-8 | Infrastructure panel | FAKE (via H-1) | Reads hardcoded health | `app/page.tsx` | — | Real health | **FIXED (Phase 2)** — dashboard renders `components` with live status/detail |
-| F-9 | Architecture page | FAKE | Static `avgDuration: "~3s"`, `lastRun: "Active"` | `app/architecture/page.tsx` | Invented runtime metrics | Mark as static diagram, remove metrics | OPEN |
-| F-10 | Explorer metrics | FAKE (by omission) | Renders `null` LLM/tool timings as `0.00s` | `components/InvestigationExplorer.tsx` | — | "Not available" | OPEN |
+| F-9 | Architecture page | FAKE | Static `avgDuration: "~3s"`, `lastRun: "Active"` | `app/architecture/page.tsx` | Invented runtime metrics | Mark as static diagram, remove metrics | **FIXED (Phase 14a)** — fabricated `avgDuration`/`lastRun` fields and the "Avg total pipeline: ~13s" legend deleted; page now carries an explicit disclaimer that it is a static diagram |
+| F-10 | Explorer metrics | FAKE (by omission) | Renders `null` LLM/tool timings as `0.00s` | `components/InvestigationExplorer.tsx` | — | "Not available" | **FIXED (Phase 14a)** — Total Duration, Confidence, tool `duration_ms`, LLM/tool execution time all guarded with `typeof x === "number"` and render "Not available" when null |
 | F-11 | Investigation summary/timeline | PARTIAL | Scrapes reasoning steps (first `completed` execution; with duplicate runs picks arbitrary one) | `app/investigations/[id]/page.tsx` | Nondeterministic display | Read persisted report | **FIXED (Phase 3)** — detail and reports pages read `/investigations/{id}/report` |
 | F-12 | Timeline "critical" highlighting | PARTIAL | Keyword heuristic on action text | `app/investigations/[id]/page.tsx` | Presentation heuristic, not evidence | Label as heuristic or remove | **FIXED (Phase 3)** — keyword 'critical' highlighting removed from report timeline |
 | F-13 | Events, evidence, investigations list pages | REAL | Read from API | `app/events`, `app/evidence`, `app/investigations` | — | — | — |
@@ -495,3 +495,54 @@ Ingested one Sysmon-style encoded-PowerShell event through the documented ingest
 11. **Retrieval** → a second, similar ingested event created case `35ac14c9`; `GET /investigations/35ac14c9/similar` returned the resolved case first at **0.8197** (semantic 0.939, mitre 1.0, ioc 0.5, asset 0.5; shared `T1059`, `198.51.100.77`, `user:asmith`), ahead of an older case at 0.629.
 
 No step used mocked data, a hardcoded value or a fabricated timestamp.
+
+### Phase 14a — Frontend truthfulness/security cleanup (2026-09-19)
+
+**Scope.** Targeted cleanup only, per explicit instruction: remove the embedded analyst
+password with a real server-side authentication design, and replace fake attack-graph /
+dashboard / metrics content with "Not available" where no real data backs it. Phase 14
+is not otherwise expanded (F-14's pre-existing `evt.type`/`evt.content` TypeScript errors
+in `app/investigations/[id]/page.tsx` are untouched and remain OPEN).
+
+**Design — authentication**
+httpOnly session cookie for the browser, Authorization Bearer header kept for machine
+clients; cookie is checked first, falling back to header, then query param (WebSocket
+handshakes carry no custom headers). No token is ever placed in JavaScript-readable
+storage.
+
+**Changed**
+- `backend/core/auth.py`: `SESSION_COOKIE_NAME = "yarox_session"`; `get_current_user()` takes `request: Request`, prefers `request.cookies[SESSION_COOKIE_NAME]`, falls back to the Bearer header, then the query param.
+- `backend/api/auth.py`: `POST /auth/login` sets the cookie (`httponly=True, samesite="lax", secure=<production>, max_age=ACCESS_TOKEN_EXPIRE_MINUTES*60, path="/"`); new `POST /auth/logout` clears it.
+- `backend/websocket/investigation_ws.py`: WS handshake reads `websocket.cookies.get(SESSION_COOKIE_NAME)` before falling back to the `?token=` query param.
+- `frontend/src/lib/api.ts`: deleted `getAuthToken()` (contained the hardcoded `analyst@yarox.local` / `YaroxAnalyst2026!` auto-login and localStorage token handling); axios instance now just sets `withCredentials: true`.
+- `frontend/src/context/AuthContext.tsx` (new), `frontend/src/components/LoginScreen.tsx` (new): real login form, `useAuth()`.
+- `frontend/src/components/providers.tsx`: `AuthProvider` + `AuthGate` (spinner while loading, `LoginScreen` if unauthenticated, else children).
+- `frontend/src/components/sidebar.tsx`: real signed-in user email/role + sign-out button.
+- `frontend/src/context/LiveInvestigationContext.tsx`: WebSocket connects with only `?case_id=` — the cookie travels automatically on the handshake; no token read from or passed through JavaScript.
+- `frontend/src/app/attack-graph/page.tsx`: deleted `CRITICAL_LABELS` (`["192.168.1.55","asmith","DB-SERVER-02","WmiPrvSE.exe"]`) and `WiderArcEdge`; added an explicit "Not available" empty state.
+- `frontend/src/components/graph/CustomNodes.tsx`: deleted the fabricated "First seen: 2023-10-27 10:01:00 UTC" tooltip and the fake "Seen (X%)" memory-match badge (grepped: no caller ever passed either prop — the backend entity graph endpoint returns only `id`, `label`, `type`).
+- `frontend/src/app/page.tsx`: `AGENTS` no longer carries `demoTasks`/`statusLabel`; added `ingestMetrics` query against real `GET /events/ingest/metrics`; `activeAgentCount` now computed from `stats.recent_activity` within a 5-minute recency window (`isAgentRecent()`); header reads "N agent(s) active"; Live Gateway badge is a real 3-state indicator (Not available / Active with timestamp / Idle); agent cards show the real activity message or "No recent activity", real recency-derived status pill, and "Not available" in place of the fabricated confidence bar (no real per-agent confidence signal exists).
+- `frontend/src/app/architecture/page.tsx`: deleted the fabricated `avgDuration`/`lastRun` fields from all 6 stage entries and the "Avg total pipeline: ~13s" legend; added an explicit disclaimer that the page is a static diagram.
+- `frontend/src/components/InvestigationExplorer.tsx`: Total Duration, `execution.confidence`, `tool.duration_ms`, and LLM/tool execution time in the metrics tab now use `typeof x === "number"` guards and render "Not available" instead of letting `null` arithmetic silently produce `0.00s` / `0%` / `NaN`.
+
+**Tests**
+- New: `backend/tests/test_session_auth.py` (8): login sets an httpOnly cookie not exposed only in the body; cookie alone authenticates with no Authorization header; wrong password is rejected and sets no cookie; logout clears the cookie and revokes cookie-based access; Bearer header still authenticates machine clients with no cookie; a session cookie takes precedence over a *different* (nonexistent-user) Bearer token — the header side deliberately points at a user that does not exist so a reversed-precedence bug would surface as 401 instead of silently passing; WebSocket authenticates from the session cookie alone with no query token; WebSocket without cookie or query token is rejected with code 1008.
+- Fixed: `backend/tests/test_security_phase4a.py` — `test_unauthorized_websocket_rejected` and `test_authorized_websocket_accepted` were passing for the wrong reason (a `MagicMock().cookies.get()` returned a truthy mock instead of `None`, so both tests actually exercised the "invalid token" path rather than "missing token"/"valid token" respectively). Fixed by setting `mock_ws.cookies = {}` explicitly.
+- `docker compose exec backend pytest -v tests/` → **215 passed** (207 baseline + 8 new).
+- `tsc --noEmit` (frontend): only the 2 pre-existing, out-of-scope F-14 errors remain (`evt.type`/`evt.content` in `investigations/[id]/page.tsx`); no new errors introduced.
+
+**Verified on the running system**
+- Live cookie-auth flow via curl against the running backend: unauthenticated `GET /auth/me` → 401; `POST /auth/login` sets `yarox_session` with `HttpOnly; SameSite=Lax; Path=/`; cookie-only `GET /auth/me` → 200; cookie authenticates a real protected endpoint (`GET /events/ingest/metrics`); `POST /auth/logout` clears the cookie; the same request afterward → 401.
+- All 5 touched frontend pages (`/`, `/attack-graph`, `/architecture`, `/investigations`, `/reports`) return HTTP 200 against the running frontend container; no new errors in `docker compose logs frontend`.
+- Live replay (`credential_theft` scenario) generated real agent activity; confirmed via `GET /dashboard/stats` that `recent_activity` carries genuine agent names, messages and timestamps (not the deleted `demoTasks` strings).
+- Ingestion badge proven bidirectionally honest, not just defaulting to a plausible-looking state: during the internal-event-bus replay (which never touches `POST /events/ingest`) `GET /events/ingest/metrics` correctly stayed at all zeros and the badge showed idle/not-active; a real `POST /events/ingest` call (`X-API-Key`, host `BADGE-TEST`) immediately moved `events_received`/`events_accepted` to 1 with a fresh `last_event_timestamp`, which is what the badge's "Active" branch reads.
+- Source-level grep confirmed the fabricated strings no longer exist anywhere in the touched files: `CRITICAL_LABELS`, `192.168.1.55`, `WmiPrvSE`, `First seen: 2023-10-27`, `demoTasks`, `Case #4A2F`, `jdoe` (in `page.tsx`/`CustomNodes.tsx`), `avgDuration`, `Avg total pipeline`, `getAuthToken`, `YaroxAnalyst2026!` — zero matches. (Note: the dashboard and attack-graph pages are client components rendered after hydration, so a raw `curl` fetch of the SSR shell does not include their post-fetch DOM either before or after this change; the source-level grep plus the live replay/API verification above is the evidence that carries this claim, not a curl-of-rendered-HTML check.)
+
+**Known limitations**
+- The ingest-metrics counters backing the Live Gateway badge are process-local (in-memory) and reset on backend restart; this was a pre-existing property of `/events/ingest/metrics`, unchanged by this phase.
+- No real per-agent live confidence signal exists anywhere in the system, so the dashboard agent-card confidence bar now honestly shows "Not available" rather than being restored to a computed value — restoring a real signal there is out of scope for this targeted cleanup.
+- F-14 (`evt.type`/`evt.content` TypeScript errors) is explicitly out of scope for Phase 14a and remains OPEN.
+- The `secure` cookie flag is derived from `settings.ENVIRONMENT`; local/dev runs over plain HTTP therefore send the cookie without `Secure`, which is correct for the current dev deployment but must be confirmed configured to `production` before any real HTTPS deployment.
+
+**Completion criterion met**
+F-1, F-3, F-4, F-5, F-6, F-7, F-9, F-10 move from OPEN to FIXED in section 9, each backed by a code change, a passing test (where applicable) and a live verification step above. No capability outside this explicit list was touched.

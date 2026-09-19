@@ -9,7 +9,7 @@ import uuid
 from database.session import get_db, AsyncSessionLocal
 from models.investigation import AgentReasoningStep, AgentExecution
 from models.user import User
-from core.auth import decode_access_token
+from core.auth import SESSION_COOKIE_NAME, decode_access_token
 from core.event_stream import InvestigationEventBridge, publish_investigation_event
 
 router = APIRouter()
@@ -89,9 +89,10 @@ async def websocket_endpoint(
     case_id: Optional[str] = Query(None),
     token: Optional[str] = Query(None)
 ):
-    # Priority 2: Enforce WebSocket Authentication
+    # Browsers authenticate with the httpOnly session cookie (sent automatically), so no
+    # token appears in the URL. The query parameter remains for programmatic clients.
+    token = websocket.cookies.get(SESSION_COOKIE_NAME) or token
     if not token:
-        # Check subprotocols or query
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Missing authentication token")
         return
 
