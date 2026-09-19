@@ -1,18 +1,33 @@
 from abc import ABC, abstractmethod
 from typing import Optional, Dict, Any, List, Tuple
+import uuid
 from datetime import datetime, timezone, timedelta
-from collections import defaultdict
 from models.event import Event
 from models.investigation import Severity
 from core.taxonomy import taxonomy_normalizer, CanonicalEventType
+from detection.state import detection_state
+
+def _event_time(event: Event) -> datetime:
+    moment = event.timestamp
+    return moment if moment.tzinfo is not None else moment.replace(tzinfo=timezone.utc)
+
+
+def _observation_id(event: Event) -> str:
+    """
+    Distinct identity for one observation. Events are normally persisted before detection
+    runs, but an event that has not been written yet has no id; falling back to the row id
+    alone would make every such observation the same member and stop the counter advancing.
+    """
+    return str(event.id) if getattr(event, "id", None) else f"transient:{uuid.uuid4()}"
+
 
 class BaseDetectionRule(ABC):
     def __init__(self):
         self.name = self.__class__.__name__
 
     @abstractmethod
-    def match(self, event: Event) -> bool:
-        pass
+    async def match(self, event: Event) -> bool:
+        """Rules are async because stateful windows live in shared storage (Redis)."""
 
     @abstractmethod
     def explain(self, event: Event) -> Dict[str, Any]:
@@ -20,32 +35,24 @@ class BaseDetectionRule(ABC):
         pass
 
 class FailedLoginBruteForce(BaseDetectionRule):
+    """Failed-login burst for one user. The window is shared across processes."""
+
     def __init__(self):
         super().__init__()
-        # state: username -> list of timestamps
-        self.failed_logins = defaultdict(list)
         self.threshold = 2
         self.window = timedelta(minutes=5)
 
-    def match(self, event: Event) -> bool:
+    async def match(self, event: Event) -> bool:
         c_type = taxonomy_normalizer.normalize(event.event_type, event.raw_log)
         if c_type == CanonicalEventType.AUTH_FAILURE or event.event_type.lower() in ['login failed', 'authentication failed', 'authentication failure', 'logon failure', 'auth_failure']:
             user = event.user_name or "unknown"
-            now = event.timestamp
-            if now.tzinfo is None:
-                now = now.replace(tzinfo=timezone.utc)
-            
-            # Clean up old events with timezone awareness
-            self.failed_logins[user] = [
-                t if t.tzinfo is not None else t.replace(tzinfo=timezone.utc)
-                for t in self.failed_logins[user]
-            ]
-            self.failed_logins[user] = [t for t in self.failed_logins[user] if now - t <= self.window]
-            self.failed_logins[user].append(now)
-            
-            if len(self.failed_logins[user]) >= self.threshold:
+            count = await detection_state.observe(
+                self.name, user, member=_observation_id(event), moment=_event_time(event),
+                window_seconds=self.window.total_seconds(),
+            )
+            if count >= self.threshold:
                 # Reset to prevent continuous triggers
-                self.failed_logins[user] = []
+                await detection_state.reset(self.name, user)
                 return True
         return False
 
@@ -60,7 +67,7 @@ class FailedLoginBruteForce(BaseDetectionRule):
         }
 
 class PrivilegeEscalation(BaseDetectionRule):
-    def match(self, event: Event) -> bool:
+    async def match(self, event: Event) -> bool:
         c_type = taxonomy_normalizer.normalize(event.event_type, event.raw_log)
         evt_type = event.event_type.lower()
         if c_type == CanonicalEventType.PRIVILEGE_CHANGE or 'privilege' in evt_type or 'admin assignment' in evt_type or 'permission change' in evt_type:
@@ -78,7 +85,7 @@ class PrivilegeEscalation(BaseDetectionRule):
         }
 
 class SuspiciousProcessExecution(BaseDetectionRule):
-    def match(self, event: Event) -> bool:
+    async def match(self, event: Event) -> bool:
         c_type = taxonomy_normalizer.normalize(event.event_type, event.raw_log)
         evt_type = event.event_type.lower()
         if c_type == CanonicalEventType.PROCESS_EXECUTION or evt_type in ['process create', 'process execution', 'process creation']:
@@ -103,37 +110,26 @@ class SuspiciousProcessExecution(BaseDetectionRule):
         }
 
 class LateralMovement(BaseDetectionRule):
+    """One user reaching several hosts inside a window. The window is shared across processes."""
+
     def __init__(self):
         super().__init__()
-        # State: user -> set of hosts accessed in a short window
-        self.user_hosts = defaultdict(lambda: {"hosts": set(), "last_seen": datetime.now(timezone.utc)})
+        self.host_threshold = 2  # fires when a user exceeds this many distinct hosts
         self.window = timedelta(minutes=10)
 
-    def match(self, event: Event) -> bool:
+    async def match(self, event: Event) -> bool:
         c_type = taxonomy_normalizer.normalize(event.event_type, event.raw_log)
         evt_type = event.event_type.lower()
         if c_type in (CanonicalEventType.REMOTE_SESSION, CanonicalEventType.USER_LOGON) or any(k in evt_type for k in ('login', 'session', 'remote')):
             user = event.user_name
             host = event.hostname
             if user and host and user != "unknown" and host != "unknown":
-                now = event.timestamp
-                if now.tzinfo is None:
-                    now = now.replace(tzinfo=timezone.utc)
-                
-                last_seen = self.user_hosts[user]["last_seen"]
-                if last_seen.tzinfo is None:
-                    last_seen = last_seen.replace(tzinfo=timezone.utc)
-                
-                # Check window
-                if now - last_seen > self.window:
-                    self.user_hosts[user]["hosts"].clear()
-                    
-                self.user_hosts[user]["hosts"].add(host)
-                self.user_hosts[user]["last_seen"] = now
-                
-                # Trigger if same user accesses > 2 different hosts in 10 mins
-                if len(self.user_hosts[user]["hosts"]) > 2:
-                    self.user_hosts[user]["hosts"].clear() # reset
+                distinct_hosts = await detection_state.distinct_values(
+                    self.name, user, value=host, moment=_event_time(event),
+                    window_seconds=self.window.total_seconds(),
+                )
+                if distinct_hosts > self.host_threshold:
+                    await detection_state.reset(self.name, user)
                     return True
         return False
 

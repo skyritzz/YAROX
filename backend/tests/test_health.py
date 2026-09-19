@@ -8,14 +8,37 @@ from unittest.mock import patch
 
 from api.main import app
 from core.config import settings
-from core.events import event_bus
+from core.events import RedisStreamEventBus, event_bus
 from websocket.investigation_ws import investigation_event_bridge
 import asyncio
 
 
 @pytest_asyncio.fixture
 async def running_event_bus():
-    """Starts the in-process components that /health requires."""
+    """
+    Starts the in-process components that /health requires (as api.main startup does).
+
+    Other tests in this suite call consumers.db_writer.handle_event_normalized directly
+    (a real production function, not a mock) to exercise storage logic without going
+    through the bus - but that function's own last step still publishes onto the real,
+    shared "EventStored" stream via the global event_bus. Nothing is consuming it at
+    that point, so those entries sit unread until a test in *this* file starts the real
+    consumer, making event_bus's reported backlog (and so its health status) depend on
+    what ran earlier in the same pytest session. Draining both real streams before
+    starting keeps this fixture's assertions deterministic regardless of test order.
+    """
+    if isinstance(event_bus, RedisStreamEventBus):
+        client = await event_bus._client()
+        await client.delete(
+            RedisStreamEventBus.stream_key("EventNormalized"),
+            RedisStreamEventBus.stream_key("EventStored"),
+        )
+
+    from consumers.db_writer import register_consumers
+    from consumers.detection_consumer import register_detection_consumers
+
+    register_consumers()
+    register_detection_consumers()
     event_bus.start()
     await investigation_event_bridge.start()
     await asyncio.wait_for(investigation_event_bridge.subscribed.wait(), timeout=5)

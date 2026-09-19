@@ -40,9 +40,10 @@ async def startup_event():
     async with AsyncSessionLocal() as session:
         await seed_initial_users(session)
         
-    event_bus.start()
+    # Subscribers must be registered before the bus starts consuming its streams
     register_consumers()
     register_detection_consumers()
+    event_bus.start()
 
     # Deliver investigation events published by any process to this process's WebSocket clients
     await investigation_event_bridge.start()

@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     # Database and Broker URLs
     DATABASE_URL: str = "postgresql+asyncpg://yarox:yaroxpassword@postgres:5432/yarox"
     REDIS_URL: str = "redis://redis:6379/0"
+    # "redis": durable Redis Streams shared by all replicas; "memory": single-process only
+    EVENT_BUS: str = "redis"
     QDRANT_URL: str = "http://qdrant:6333"
     QDRANT_COLLECTION: str = "investigation_memory"
     # Similar cases scoring below this weighted similarity are not returned (see memory/service.py).

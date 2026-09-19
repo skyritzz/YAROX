@@ -123,14 +123,17 @@ async def probe_ws_event_bridge() -> ProbeResult:
 
 
 async def probe_event_bus() -> ProbeResult:
-    from core.events import event_bus
+    from core.events import RedisStreamEventBus, event_bus
 
-    task = event_bus._worker_task
-    if task is None:
-        return DOWN, "in-process event bus worker not started"
-    if task.done():
-        return DOWN, "in-process event bus worker has stopped"
-    return UP, "in-process event bus worker running (single process only)"
+    info = event_bus.describe()
+    if not event_bus.running:
+        return DOWN, f"{info['type']} event bus is not consuming; ingested events are not processed"
+    if isinstance(event_bus, RedisStreamEventBus):
+        pending = {topic: await event_bus.pending_count(topic) for topic in info["topics"]}
+        backlog = sum(pending.values())
+        detail = f"redis streams, group {info['group']}, consumer {info['consumer']}, topics {info['topics']}, {backlog} unacknowledged"
+        return (DEGRADED, detail) if backlog else (UP, detail)
+    return UP, f"in-process event bus running (single process only, events are not durable), topics {info['topics']}"
 
 
 # name -> (probe, required)

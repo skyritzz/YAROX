@@ -32,7 +32,7 @@ class DetectionEngine:
 
     async def process_event(self, db: AsyncSession, event: Event) -> InvestigationCase | None:
         for rule in self.rules:
-            if rule.match(event):
+            if await rule.match(event):
                 explanation = rule.explain(event)
                 
                 from correlation.engine import correlation_engine

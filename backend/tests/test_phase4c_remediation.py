@@ -57,9 +57,14 @@ def test_generic_json_parser_normalizes_and_preserves_raw_event():
 # -----------------------------------------------------------------------------
 # 2. Detection Rule Canonical Taxonomy Integration Tests
 # -----------------------------------------------------------------------------
-def test_failed_login_brute_force_matches_canonical_auth_failure():
+@pytest.mark.asyncio
+async def test_failed_login_brute_force_matches_canonical_auth_failure():
+    from detection.state import detection_state
+
     rule = FailedLoginBruteForce()
     now = datetime.now(timezone.utc)
+    # The window now lives in Redis and is shared across processes and runs
+    await detection_state.reset(rule.name, "admin")
     
     ev1 = Event(
         timestamp=now,
@@ -78,8 +83,8 @@ def test_failed_login_brute_force_matches_canonical_auth_failure():
         raw_log={"EventID": 4625}
     )
     
-    assert not rule.match(ev1)
-    assert rule.match(ev2)
+    assert not await rule.match(ev1)
+    assert await rule.match(ev2)
     exp = rule.explain(ev2)
     assert exp["mitre_technique_id"] == "T1110"
     assert exp["severity"] == Severity.HIGH
