@@ -5,11 +5,11 @@
 This is the one typed, validated, versioned shape that every event source is
 normalized into before it reaches the event bus, storage
 (`models.event.Event`), detection (`detection/engine.py`, `detection/rules.py`)
-or correlation (`correlation/engine.py`). It exists so that a future connector
-(Sysmon, Suricata EVE, Splunk HEC — none implemented yet; see "Out of scope"
-below) has a single, documented target to normalize into, instead of having
-to reverse-engineer `GenericJSONParser`'s inline logic the way this document's
-predecessor state required.
+or correlation (`correlation/engine.py`). It exists so that a connector
+(Sysmon and Suricata EVE implemented; Splunk HEC not yet — see "Out of
+scope" below) has a single, documented target to normalize into, instead of
+having to reverse-engineer `GenericJSONParser`'s inline logic the way this
+document's predecessor state required.
 
 Implementation: [`backend/schemas/canonical_event.py`](../backend/schemas/canonical_event.py)
 (`CanonicalSecurityEvent`, a Pydantic v2 model). Tests:
@@ -244,23 +244,26 @@ different concerns and must not be conflated.
   the full account; this is the concrete defect that justified touching
   `detection/` during connector work, per the "do not redesign without
   identifying a concrete defect" instruction.
-- **`FILE_OPERATION` and `SYSTEM_ALERT`** exist in `CanonicalEventType` but
-  have no keyword/EventID mapping producing them, and no detection rule
-  consumes them — unreachable in practice today. Not fixed here (taxonomy
-  and detection-rule expansion is separate work, not a contract concern).
-- **No network/C2 detection rule exists** (audit finding D-4) —
-  `NETWORK_TRAFFIC` events normalize successfully through this contract but
-  have nothing downstream to detect on them. This is why the user's plan
-  explicitly requires Scenario 3 (Suricata/network C2) to be marked
-  **blocked** when Phase 13 scenario tests are eventually attempted — the
-  contract does not create a detection capability that doesn't exist.
-- **One connector implemented (Sysmon), two remain.** The original contract
-  phase was scoped "before implementing connectors"; a follow-up session
-  implemented the Sysmon connector (see **Connectors** below). Suricata EVE
-  and Splunk HEC (CLAUDE.md roadmap Step 5) are still not implemented — per
-  the user's item 3, Phase 13 scenarios that depend on those sources (e.g.
-  any Suricata/network-C2 scenario) remain blocked, both by the missing
-  connector and by the still-missing network/C2 detection rule (D-4).
+- **`FILE_OPERATION` and `SYSTEM_ALERT` are now reachable** (Sysmon EventID
+  11 and Suricata EVE `alert` respectively map to them — see **Connectors**
+  below) **but still have no detection rule consuming them**, same as
+  `NETWORK_TRAFFIC`. Producing the canonical type and detecting on it are
+  separate concerns; connector work only does the former.
+- **No network/C2 or IDS-alert detection rule exists** (audit findings D-4/
+  D-5) — `NETWORK_TRAFFIC` and `SYSTEM_ALERT` events normalize successfully
+  through this contract but have nothing downstream to detect on them. This
+  is why the user's plan explicitly requires Scenario 3 (Suricata/network
+  C2) to be marked **blocked** when Phase 13 scenario tests are eventually
+  attempted — the contract (and now the Suricata connector) does not create
+  a detection capability that doesn't exist.
+- **Two connectors implemented (Sysmon, Suricata EVE), one remains.** The
+  original contract phase was scoped "before implementing connectors";
+  follow-up sessions implemented the Sysmon and Suricata EVE connectors (see
+  **Connectors** below). Splunk HEC (CLAUDE.md roadmap Step 5) is still not
+  implemented — per the user's item 3, Phase 13 scenarios that depend on it
+  remain blocked. The Suricata/network-C2 scenario specifically remains
+  blocked by the missing network/C2 detection rule (D-4/D-5), not by a
+  missing connector anymore.
 - **Ingestion metrics remain process-local** (pre-existing, unrelated to
   this phase — tracked under audit item A-8 and Phase 10/durable-bus work).
 
@@ -363,9 +366,101 @@ risk, since `from_raw()` always populates `metadata_` with at least whatever
 test fails without this fix (confirmed via `git stash` of just these two
 files) and passes with it; the full 262-test suite is unaffected.
 
+### Suricata EVE (connector #2, implemented)
+
+**What it is.** Accepts records from Suricata's EVE JSON output
+(`eve.json`), the flow-oriented, line-delimited JSON the Suricata IDS/IPS
+engine emits — not the legacy unified2/fast.log formats. Each EVE record
+carries its own top-level `event_type` field (Suricata's own field name,
+distinct from the canonical contract's `event_type` concept) that
+discriminates the record shape, e.g. `{"event_type": "alert", "src_ip":
+"...", "dest_ip": "...", "alert": {"signature": "...", "severity": 1, ...}}`.
+
+**Endpoint.** `POST /events/ingest/suricata`, same `X-API-Key` header, Redis
+rate limiter, and duplicate-suppression approach as `POST
+/events/ingest/sysmon` (reuses `verify_ingestion_api_key`,
+`ingestion_rate_limiter`, `core.integrity.find_duplicate_event_id`
+unchanged). Request body: `{"event": {...}}`, one EVE record per request —
+`eve.json` is line-delimited on disk, but batching multiple lines into one
+request is not supported (see Limitations). Response:
+`{"status": "accepted"|"duplicate", "event_id", "timestamp", "hostname",
+"event_type", "canonical_event_type", "ingest_mode"}`.
+
+**Supported EVE `event_type` values and field mapping**
+(`backend/plugins/parsers/suricata.py`):
+
+| EVE `event_type` | Meaning | `canonical_event_type` | Fields mapped into `metadata` |
+|---|---|---|---|
+| `alert` | NIDS signature match | `SYSTEM_ALERT` | `signature`, `signature_id`, `category`, `alert_action` (from the nested `alert` object), `suricata_severity` (Suricata's own 1–3 value), plus the shared network fields below |
+| `flow` | Connection/flow record | `NETWORK_TRAFFIC` | `app_proto`, `bytes_toserver`, `bytes_toclient`, `pkts_toserver`, `pkts_toclient`, `flow_state` (from the nested `flow` object), plus the shared network fields below |
+
+Shared network fields (both types): `source_ip` (`src_ip`), `source_port`
+(`src_port`), `destination_ip` **and** `ip_address` (both set to `dest_ip` —
+same dual-key convention the Sysmon connector uses for its Network Connect
+mapping, for the same entity-extraction compatibility reason),
+`destination_port` (`dest_port`), `protocol` (`proto`).
+
+Both `canonical_event_type` mappings are new, purely additive entries in
+`core/taxonomy.py`'s `_TAXONOMY_MAP` (`"suricata alert"` →`SYSTEM_ALERT`,
+`"network flow"` → `NETWORK_TRAFFIC`). `SYSTEM_ALERT` existed in the
+`CanonicalEventType` enum but had no string/ID mapping reaching it before
+this connector — the same "defined but unreachable" situation
+`FILE_OPERATION` was in before the Sysmon connector added Sysmon EventID 11.
+
+Any other EVE `event_type` — `dns`, `http`, `tls`, `fileinfo`, `stats`, etc.
+— is rejected with `422` and an explicit message, not silently normalized.
+Each of those record types has a materially different field shape; adding
+one means giving it its own explicit mapping the same way `flow` was added
+here, not stretching this connector's assumptions to cover fields it was
+never built to read.
+
+Other field handling:
+- `hostname`: EVE carries no built-in identity for the traffic's endpoints
+  (Suricata observes the wire, not a process) — `host` is the *sensor's*
+  own hostname, populated only when Suricata's optional `host-info` EVE
+  output extension is enabled. When absent, the canonical contract's own
+  `"unknown"` sentinel default applies, same as any source with no real
+  host (excluded from correlation matching, per the contract's existing
+  convention).
+- `user_name`: not set by this connector (EVE carries no user identity);
+  defaults to the contract's `"unknown"` sentinel.
+- `timestamp`: EVE's timestamp (`"2026-09-20T10:15:22.123456+0000"`) uses a
+  colon-less UTC offset that the contract's own strict `isoparse` does not
+  reliably accept, so the connector parses it with `dateutil.parser.parse()`
+  (lenient) and hands the contract a real `datetime` object directly — same
+  approach and same reason as the Sysmon connector's `UtcTime` handling.
+- `raw_log`: the entire original EVE record, untouched, for chain of
+  custody — same convention as the Sysmon connector.
+- `severity`: for `alert` records, mapped from Suricata's own
+  `alert.severity` (1 = highest priority in Suricata/ET convention) via a
+  conservative table — `1`→`HIGH`, `2`→`MEDIUM`, `3` or missing/unrecognized
+  →`LOW` (never `INFO`, since an `alert` record is by definition always a
+  signature match, and never `CRITICAL`, since this connector normalizes
+  vendor severity, it does not decide investigation severity — no
+  detection rule reads this field yet). For `flow` records, always
+  `"INFO"` — a flow record is raw telemetry, not itself a finding, same
+  rationale as the Sysmon connector's Network Connect events.
+- `alert.signature` is required for `alert` records (rejected with `422` if
+  missing) — an alert connector's core job is to carry a signature match
+  forward as evidence (CLAUDE.md Rule 5); an "alert" with no signature
+  would misrepresent what it is.
+
+**No detection rule currently targets `SYSTEM_ALERT` or `NETWORK_TRAFFIC`**
+(see "How to add another connector" step 7 below, and
+`YAROX_REALITY_AUDIT.md` D-4/D-5). A Suricata alert — even a genuine,
+high-confidence signature match like "ET TROJAN Cobalt Strike Beaconing
+Detected" — is normalized, stored, hashed, and available as evidence exactly
+like any other event, but does not by itself create an `InvestigationCase`
+yet. Confirmed live: a real alert event posted to the running stack stored
+correctly (`canonical_event_type: SYSTEM_ALERT`, `severity: HIGH`,
+`metadata.signature` intact, `payload_sha256` verified) with no
+`EvidenceItem`/`InvestigationCase` created — the expected, documented
+behavior, not a defect in this connector. Closing that gap is Phase 13
+detection-rule work.
+
 ### How to add another connector
 
-The Sysmon connector is the template. To add Suricata EVE, Splunk HEC, or
+The Sysmon and Suricata EVE connectors are the template. To add Splunk HEC or
 anything else:
 
 1. Write a parser module under `backend/plugins/parsers/<name>.py`
@@ -515,3 +610,68 @@ been verified live against the running stack including a real detection
 match, and the one concrete defect found along the way
 (`detection/`'s `raw_log`-only metadata reads) is fixed with evidence, not
 worked around. Per the governing instruction, Phase 13 has not been started.
+
+## Evidence (Suricata EVE connector, follow-up session)
+
+- Files: `backend/plugins/parsers/suricata.py` (new), `backend/schemas/ingest.py`
+  (+`SuricataIngestRequest`/`SuricataIngestResponse`), `backend/api/ingest.py`
+  (+`POST /events/ingest/suricata`), `backend/core/taxonomy.py` (+`"suricata
+  alert"` → `SYSTEM_ALERT`, `"network flow"` → `NETWORK_TRAFFIC`), new test
+  file `backend/tests/test_suricata_connector.py` (19 tests). No changes to
+  `detection/` this time — no concrete defect was found (see below on why
+  the end-to-end test doesn't assert a detection match).
+- `docker compose exec backend pytest -v tests/test_suricata_connector.py` →
+  **19 passed**: 9 field-mapping tests (`alert`/`flow` mapping, Suricata
+  severity 1/3/missing → HIGH/LOW/LOW, missing-host fallback to the
+  `"unknown"` sentinel, colon-less EVE timestamp offset parsing,
+  missing-timestamp fallback), 8 validation-failure tests (missing EVE
+  `event_type`, unsupported EVE `event_type` both at the parser level and
+  over HTTP, `alert` record missing `alert.signature` both with and without
+  the `alert` object present, non-dict payload, oversized payload over HTTP,
+  missing API key), 1 duplicate-redelivery test, 1 end-to-end test through
+  the real bus.
+- `docker compose exec backend pytest -q tests/` → **284 passed** (265 + 19:
+  262 Phase-11/Sysmon baseline + 3 `test_migration_genesis.py` from the X-5
+  fix + 19 new here), no regressions.
+- Live, on the running stack (`docker compose restart backend celery_worker`):
+  `POST /events/ingest/suricata` with a real `alert` record (`ET TROJAN
+  Cobalt Strike Beaconing Detected`, `alert.severity: 1`) → `202
+  {"status": "accepted", "canonical_event_type": "SYSTEM_ALERT", ...}`; a
+  direct Postgres query confirmed the stored row: `source=suricata`,
+  `event_type=SYSTEM_ALERT`, `severity=HIGH`,
+  `metadata->>'signature'='ET TROJAN Cobalt Strike Beaconing Detected'`, and
+  a non-null `payload_sha256`. Confirmed **no** `EvidenceItem` was created
+  for it — the expected, documented outcome (no detection rule targets
+  `SYSTEM_ALERT` yet; D-4/D-5), not a bug. The manually-inserted
+  verification row was deleted afterward to keep the dev database clean, per
+  the standing "do not purge dev data" constraint — this was a row created
+  and removed within this same verification step, not pre-existing data.
+
+**Known limitations specific to this connector**: no batch ingestion (one
+EVE record per HTTP request, same as Sysmon); duplicate detection has the
+same race window documented for the Sysmon connector (not independently
+re-verified live for this connector — the unit/HTTP-level tests cover the
+non-race-window case); only two of EVE's several record types are mapped
+(`alert`, `flow`) — `dns`/`http`/`tls`/`fileinfo`/`stats` remain
+unimplemented and are rejected explicitly rather than silently accepted;
+`hostname` reflects the Suricata sensor, not either traffic endpoint (EVE
+has no concept of an "originating host" the way Sysmon does), so
+correlation by hostname will not connect a Suricata alert to the endpoint
+that produced the traffic without additional IP-to-host attribution this
+phase does not add; most importantly, `SYSTEM_ALERT` and `NETWORK_TRAFFIC`
+events reaching this contract still have no detection rule consuming them —
+the connector normalizes correctly, it does not create a detection
+capability that doesn't exist (D-4/D-5, Phase 13 territory).
+
+**Completion criterion (connector):** the Suricata EVE connector is
+implemented using the existing canonical contract (no parallel validation
+path, both new taxonomy entries purely additive), field
+mapping/validation/duplicate/end-to-end behavior is each backed by a test,
+and it has been verified live against the running stack with a real stored,
+hashed row. Unlike the Sysmon connector, no detection-side defect was found
+or claimed to be fixed — the end-to-end test and the live verification both
+explicitly confirm the documented absence of `SYSTEM_ALERT`/`NETWORK_TRAFFIC`
+detection coverage rather than asserting a match that would not occur. Per
+the governing instruction, Phase 13 (detection rules for these types) has
+not been started. Splunk HEC (CLAUDE.md roadmap Step 5, the third named
+connector) remains not implemented.

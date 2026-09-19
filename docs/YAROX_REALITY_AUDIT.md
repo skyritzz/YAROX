@@ -75,7 +75,7 @@ The "Restoration" column is updated as phases complete. `OPEN` = not yet address
 | E-1 | Event bus | PARTIAL | `InMemoryEventBus` over `asyncio.Queue`; subscriber errors `print`ed and dropped | `core/events.py` | Lost on restart; single process only | Phase 10: Redis Streams | **FIXED (Phase 10)** — `RedisStreamEventBus` (consumer group, ack-after-success, `xautoclaim` crash recovery) is the default (`EVENT_BUS=redis`); `InMemoryEventBus` kept for single-process/test use. Verified live: a real container stop/publish/restart cycle proved no event loss. |
 | E-2 | Event integrity hash | MISSING | No hash column on `events`; no SHA-256 over payload anywhere | `models/event.py` | Chain-of-custody claim is false | `payload_sha256` column + canonical JSON hashing + migration | **FIXED (Phase 2)** — `events.payload_sha256`, `core/integrity.py`, `GET /events/{id}/integrity`; legacy rows NULL |
 | E-3 | Canonical event model | PARTIAL | `GenericJSONParser` returns ORM dict; `CanonicalEventType` taxonomy exists; no `CanonicalSecurityEvent` Pydantic model | `plugins/parsers/generic.py`, `core/taxonomy.py` | Connectors cannot target a stable contract | Phase 11 | **FIXED (Phase 11)** — `schemas/canonical_event.py` `CanonicalSecurityEvent`, versioned (`schema_version: Literal["1.0"]`), wired into both live ingest and replay via `GenericJSONParser`; see `docs/CANONICAL_EVENT_MODEL.md` |
-| E-4 | Connectors (Sysmon, Suricata, Splunk HEC) | PARTIAL | Sysmon implemented (`plugins/parsers/sysmon.py`, `POST /events/ingest/sysmon`); Suricata EVE and Splunk HEC not started | `backend/plugins/parsers/sysmon.py`, `backend/api/ingest.py` | Spec claims connector ecosystem | Phase 11 follow-up | **PARTIAL (Phase 11 connector #1)** — Sysmon connector implemented, tested (18 tests), and live-verified end to end including a real detection match; see `docs/CANONICAL_EVENT_MODEL.md` "Connectors". Suricata EVE / Splunk HEC remain OPEN. Phase 13 scenarios needing those sources (e.g. network/C2) remain blocked. |
+| E-4 | Connectors (Sysmon, Suricata, Splunk HEC) | PARTIAL | Sysmon and Suricata EVE implemented (`plugins/parsers/sysmon.py`/`suricata.py`, `POST /events/ingest/sysmon`/`suricata`); Splunk HEC not started | `backend/plugins/parsers/sysmon.py`, `backend/plugins/parsers/suricata.py`, `backend/api/ingest.py` | Spec claims connector ecosystem | Phase 11 follow-up | **PARTIAL (Phase 11 connectors #1, #2)** — Sysmon and Suricata EVE connectors implemented, tested (18 + 19 tests), and live-verified end to end; Sysmon includes a real detection match, Suricata EVE confirms (as documented, not a bug) that `SYSTEM_ALERT`/`NETWORK_TRAFFIC` events currently have no detection rule to match against. See `docs/CANONICAL_EVENT_MODEL.md` "Connectors". Splunk HEC remains OPEN. Phase 13 scenarios needing network/C2 detection remain blocked by D-4/D-5, not by the missing connector anymore. |
 | D-1 | Detection rules (4) | PARTIAL | Rules match; `DetectionEngine.process_event` returns on **first** matching rule; `SuspiciousProcessExecution` matches any `cmd.exe`/`powershell` command line | `detection/engine.py`, `detection/rules.py` | Multi-rule events lose detections; noisy | Evaluate all rules; tighten indicators | OPEN — first-match/noise behavior unchanged. Separately, a real metadata-read defect (rules/entity-extraction reading `event.raw_log['metadata']` instead of the real `event.metadata_` column, silently missing any caller that doesn't duplicate metadata into raw_log) was found and fixed during Sysmon connector work; see `docs/CANONICAL_EVENT_MODEL.md` "Connectors". |
 | D-2 | Detection state | PARTIAL | Brute-force and lateral-movement counters in process memory (`defaultdict`) | `detection/rules.py` `FailedLoginBruteForce.failed_logins`, `LateralMovement.user_hosts` | Two instances disagree; restart resets | Phase 10: Redis-backed windows | **FIXED (Phase 10)** — `detection/state.py` `DetectionStateStore`, Redis sorted-set sliding windows shared by every process, window-expiring TTL. Both rules now `async` and read/write the shared store. |
 | D-3 | Sigma engine | PARTIAL | One YAML rule; only `contains`/`exact` selection; used only to bump importance score | `rules/sigma/engine.py` | Not a Sigma engine | Mark as partial | OPEN |
@@ -736,3 +736,46 @@ paths); re-running the upgrade is a safe no-op; the application boots
 against the migrated schema; the full test suite passes; regression tests
 exist and are confirmed to fail against the original chain. None of the
 original 5 broken migration files were deleted or rewritten.
+
+### E-4 follow-up — Suricata EVE connector (Phase 11 connector #2) (2026-09-19)
+
+Second connector on the canonical event contract (see `docs/CANONICAL_EVENT_MODEL.md`
+"Connectors" → "Suricata EVE" for the full field-mapping table and rationale;
+not duplicated here). New: `backend/plugins/parsers/suricata.py`
+(`SuricataParser`, EVE `event_type` values `alert` → `SYSTEM_ALERT` and
+`flow` → `NETWORK_TRAFFIC`), `POST /events/ingest/suricata`
+(`backend/api/ingest.py`), request/response schemas
+(`backend/schemas/ingest.py`), two purely-additive taxonomy entries
+(`backend/core/taxonomy.py`), and `backend/tests/test_suricata_connector.py`
+(19 tests). No changes to `detection/`.
+
+**Tests**: `docker compose exec backend pytest -v tests/test_suricata_connector.py`
+→ **19 passed**. Full suite: `docker compose exec backend pytest -q tests/`
+→ **284 passed** (265 baseline + 19), no regressions.
+
+**Live verification**: `docker compose restart backend celery_worker`, then a
+real `POST /events/ingest/suricata` alert (`ET TROJAN Cobalt Strike
+Beaconing Detected`, `alert.severity: 1`) → `202
+{"canonical_event_type": "SYSTEM_ALERT", ...}`; direct Postgres query
+confirmed `source=suricata`, `severity=HIGH`, `metadata.signature` intact,
+non-null `payload_sha256`. Confirmed **no** `EvidenceItem`/`InvestigationCase`
+was created — expected, since D-4 (no network/IDS-alert detection rule)
+remains open; not a defect in this connector. The verification row was
+deleted afterward (created and removed within this same step, not
+pre-existing dev data).
+
+**Known limitations**: only `alert`/`flow` of EVE's several record types are
+mapped (`dns`/`http`/`tls`/`fileinfo`/`stats` rejected explicitly, not
+silently accepted); `hostname` reflects the Suricata sensor, not a traffic
+endpoint; the connector normalizes correctly but creates no new detection
+capability (D-4 still open). See `docs/CANONICAL_EVENT_MODEL.md` for full
+detail.
+
+**Completion criterion met (connector only)**: implemented on the existing
+canonical contract with no parallel validation path; field
+mapping/validation/duplicate/end-to-end behavior each backed by a test;
+verified live against the running stack with a real stored, hashed row.
+Detection coverage for `SYSTEM_ALERT`/`NETWORK_TRAFFIC` (D-4) is explicitly
+out of scope and remains open — Phase 13 territory, not connector work.
+Splunk HEC (the third named connector, CLAUDE.md roadmap Step 5) remains
+unimplemented.

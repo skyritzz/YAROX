@@ -74,6 +74,10 @@ class EventTaxonomyNormalizer:
         "service heartbeat": CanonicalEventType.SERVICE_HEARTBEAT,
         "scheduled task": CanonicalEventType.SERVICE_HEARTBEAT,
         "maintenance sync": CanonicalEventType.SERVICE_HEARTBEAT,
+
+        # Network / IDS (Suricata EVE connector, Phase 11 connector #2)
+        "suricata alert": CanonicalEventType.SYSTEM_ALERT,
+        "network flow": CanonicalEventType.NETWORK_TRAFFIC,
     }
 
     # Windows Event ID mappings

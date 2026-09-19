@@ -81,3 +81,35 @@ class SysmonIngestResponse(BaseModel):
     event_type: str
     canonical_event_type: str
     ingest_mode: str = "LIVE"
+
+
+class SuricataIngestRequest(BaseModel):
+    """
+    One raw Suricata EVE JSON record ('alert' or 'flow'), field casing as
+    Suricata emits it ('event_type', 'src_ip', 'dest_ip', 'alert', 'flow', ...).
+    Deliberately not a field-by-field schema, same rationale as
+    SysmonIngestRequest: which fields are present depends on the record's own
+    'event_type' — plugins.parsers.suricata.SuricataParser is the single
+    source of field validation. One EVE record per request; eve.json is
+    line-delimited on disk, but batching multiple lines into one request is a
+    documented limitation, not supported yet.
+    """
+    event: Dict[str, Any] = Field(..., description="The raw Suricata EVE JSON record, e.g. {'event_type': 'alert', 'src_ip': '...', 'dest_ip': '...', 'alert': {'signature': '...', 'severity': 1, ...}, ...}")
+
+    @field_validator("event")
+    @classmethod
+    def validate_payload_size(cls, v: Dict[str, Any]) -> Dict[str, Any]:
+        serialized = json.dumps(v)
+        if len(serialized.encode("utf-8")) > MAX_PAYLOAD_SIZE_BYTES:
+            raise ValueError(f"Payload size ({len(serialized.encode('utf-8'))} bytes) exceeds maximum allowable limit of {MAX_PAYLOAD_SIZE_BYTES} bytes (64 KB).")
+        return v
+
+
+class SuricataIngestResponse(BaseModel):
+    status: str  # "accepted" | "duplicate"
+    event_id: str
+    timestamp: str
+    hostname: str
+    event_type: str
+    canonical_event_type: str
+    ingest_mode: str = "LIVE"

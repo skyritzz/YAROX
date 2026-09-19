@@ -19,9 +19,12 @@ from schemas.ingest import (
     IngestMetricsResponse,
     SysmonIngestRequest,
     SysmonIngestResponse,
+    SuricataIngestRequest,
+    SuricataIngestResponse,
 )
 from plugins.parsers.generic import generic_parser
 from plugins.parsers.sysmon import sysmon_parser
+from plugins.parsers.suricata import suricata_parser
 
 router = APIRouter()
 
@@ -216,6 +219,91 @@ async def ingest_sysmon_event(
         )
 
     return SysmonIngestResponse(
+        status="accepted",
+        event_id=str(normalized_dict["id"]),
+        timestamp=normalized_dict["timestamp"].isoformat(),
+        hostname=normalized_dict["hostname"],
+        event_type=normalized_dict["event_type"],
+        canonical_event_type=canonical_event.canonical_event_type.value,
+        ingest_mode="LIVE",
+    )
+
+
+@router.post("/suricata", response_model=SuricataIngestResponse, status_code=status.HTTP_202_ACCEPTED)
+async def ingest_suricata_event(
+    request: SuricataIngestRequest,
+    raw_request: Request,
+    api_key: str = Depends(verify_ingestion_api_key),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Suricata EVE connector (Phase 11, connector #2): accepts one raw Suricata
+    EVE JSON record, normalizes it through plugins.parsers.suricata.SuricataParser
+    into the same canonical contract every other source uses, and publishes it
+    on the same 'EventNormalized' topic — reusing live ingestion's auth, rate
+    limiting, durable event bus, storage and detection pipeline unchanged.
+
+    Supports EVE 'event_type' values 'alert' (a NIDS signature match) and
+    'flow' (a connection record). Any other EVE event_type, or a
+    missing/unsupported one, is rejected with 422 — see
+    plugins/parsers/suricata.py for the full mapping and
+    docs/CANONICAL_EVENT_MODEL.md "Connectors" for why the other EVE record
+    types ('dns', 'http', 'tls', 'fileinfo', ...) are intentionally not
+    accepted here yet.
+    """
+    metrics_tracker.record_received()
+
+    client_ip = raw_request.client.host if raw_request.client else "default_shipper"
+    is_allowed, retry_after = await ingestion_rate_limiter.check_rate_limit(f"{client_ip}:{api_key[:8]}")
+    if not is_allowed:
+        metrics_tracker.record_rate_limited()
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Telemetry ingestion rate limit exceeded (Max {settings.RATE_LIMIT_INGEST_PER_MINUTE} events/min). Try again in {retry_after} seconds.",
+            headers={"Retry-After": str(retry_after)}
+        )
+
+    try:
+        canonical_event = suricata_parser.to_canonical(request.event)
+    except CanonicalEventValidationError as e:
+        metrics_tracker.record_rejected()
+        print(f"[INGEST ERROR] Suricata event rejected: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Failed to normalize Suricata event: {str(e)}"
+        )
+
+    normalized_dict = canonical_event.to_orm_kwargs()
+
+    # Best-effort duplicate suppression, same rationale as the Sysmon endpoint:
+    # a redelivered identical EVE record (e.g. a shipper resending after a
+    # restart) is acknowledged idempotently instead of being stored twice.
+    content_hash = compute_event_hash(normalized_dict)
+    existing_id = await find_duplicate_event_id(db, content_hash)
+    if existing_id is not None:
+        metrics_tracker.record_accepted()
+        return SuricataIngestResponse(
+            status="duplicate",
+            event_id=str(existing_id),
+            timestamp=normalized_dict["timestamp"].isoformat(),
+            hostname=normalized_dict["hostname"],
+            event_type=normalized_dict["event_type"],
+            canonical_event_type=canonical_event.canonical_event_type.value,
+            ingest_mode="LIVE",
+        )
+
+    try:
+        await event_bus.publish("EventNormalized", normalized_dict)
+        metrics_tracker.record_accepted()
+    except Exception as e:
+        metrics_tracker.record_rejected()
+        print(f"[INGEST ERROR] Failed to publish Suricata event: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Failed to process Suricata event: {str(e)}"
+        )
+
+    return SuricataIngestResponse(
         status="accepted",
         event_id=str(normalized_dict["id"]),
         timestamp=normalized_dict["timestamp"].isoformat(),
