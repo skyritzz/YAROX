@@ -5,6 +5,7 @@ import os
 import dateutil.parser
 from core.events import EventBus
 from plugins.parsers.generic import GenericJSONParser
+from schemas.canonical_event import CanonicalEventValidationError
 
 class ReplayEngine:
     def __init__(self, event_bus: EventBus):
@@ -67,10 +68,17 @@ class ReplayEngine:
                 if sleep_time > 0:
                     await asyncio.sleep(sleep_time)
 
-            # Parse and Publish
-            parsed_data = self.parser.parse(raw_event)
+            # Parse and Publish. A single malformed dataset record must not kill the
+            # whole replay stream (Phase 11: the canonical contract now validates
+            # severity/payload-size strictly instead of silently coercing them).
+            try:
+                parsed_data = self.parser.parse(raw_event)
+            except CanonicalEventValidationError as e:
+                print(f"[REPLAY] Skipping invalid event at index {i} in {scenario_name}: {e}")
+                prev_time = current_time
+                continue
             await self.event_bus.publish("EventNormalized", parsed_data)
-            
+
             # Throttle database progress updates to prevent massive I/O bottlenecks during fast replays
             if i % 10 == 0 or i == total_events - 1:
                 async with AsyncSessionLocal() as db:

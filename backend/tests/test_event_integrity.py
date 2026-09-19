@@ -122,7 +122,8 @@ async def test_integrity_endpoint_reports_verification_and_legacy_rows():
         legacy_id = uuid.uuid4()
         async with AsyncSessionLocal() as session:
             legacy = dict(_normalized())
-            session.add(Event(id=legacy_id, **legacy))  # stored without a hash, like pre-migration rows
+            legacy["id"] = legacy_id  # _normalized() already assigns an id (Phase 11 contract); override it here
+            session.add(Event(**legacy))  # stored without a hash, like pre-migration rows
             await session.commit()
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:

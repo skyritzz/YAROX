@@ -74,8 +74,8 @@ The "Restoration" column is updated as phases complete. `OPEN` = not yet address
 |---|---|---|---|---|---|---|---|
 | E-1 | Event bus | PARTIAL | `InMemoryEventBus` over `asyncio.Queue`; subscriber errors `print`ed and dropped | `core/events.py` | Lost on restart; single process only | Phase 10: Redis Streams | OPEN |
 | E-2 | Event integrity hash | MISSING | No hash column on `events`; no SHA-256 over payload anywhere | `models/event.py` | Chain-of-custody claim is false | `payload_sha256` column + canonical JSON hashing + migration | **FIXED (Phase 2)** — `events.payload_sha256`, `core/integrity.py`, `GET /events/{id}/integrity`; legacy rows NULL |
-| E-3 | Canonical event model | PARTIAL | `GenericJSONParser` returns ORM dict; `CanonicalEventType` taxonomy exists; no `CanonicalSecurityEvent` Pydantic model | `plugins/parsers/generic.py`, `core/taxonomy.py` | Connectors cannot target a stable contract | Phase 11 | OPEN |
-| E-4 | Connectors (Sysmon, Suricata, Splunk HEC) | MISSING | `plugins/{agents,providers,replay,tools}` empty | `backend/plugins/` | Spec claims connector ecosystem | Phase 11 | OPEN |
+| E-3 | Canonical event model | PARTIAL | `GenericJSONParser` returns ORM dict; `CanonicalEventType` taxonomy exists; no `CanonicalSecurityEvent` Pydantic model | `plugins/parsers/generic.py`, `core/taxonomy.py` | Connectors cannot target a stable contract | Phase 11 | **FIXED (Phase 11)** — `schemas/canonical_event.py` `CanonicalSecurityEvent`, versioned (`schema_version: Literal["1.0"]`), wired into both live ingest and replay via `GenericJSONParser`; see `docs/CANONICAL_EVENT_MODEL.md` |
+| E-4 | Connectors (Sysmon, Suricata, Splunk HEC) | MISSING | `plugins/{agents,providers,replay,tools}` empty | `backend/plugins/` | Spec claims connector ecosystem | Phase 11 | OPEN — deliberately not started; Phase 11 was explicitly scoped to "before implementing connectors" per the governing instruction. Do not begin Phase 13 until at least one real connector using this contract is implemented and tested. |
 | D-1 | Detection rules (4) | PARTIAL | Rules match; `DetectionEngine.process_event` returns on **first** matching rule; `SuspiciousProcessExecution` matches any `cmd.exe`/`powershell` command line | `detection/engine.py`, `detection/rules.py` | Multi-rule events lose detections; noisy | Evaluate all rules; tighten indicators | OPEN |
 | D-2 | Detection state | PARTIAL | Brute-force and lateral-movement counters in process memory (`defaultdict`) | `detection/rules.py` `FailedLoginBruteForce.failed_logins`, `LateralMovement.user_hosts` | Two instances disagree; restart resets | Phase 10: Redis-backed windows | OPEN |
 | D-3 | Sigma engine | PARTIAL | One YAML rule; only `contains`/`exact` selection; used only to bump importance score | `rules/sigma/engine.py` | Not a Sigma engine | Mark as partial | OPEN |
@@ -546,3 +546,40 @@ storage.
 
 **Completion criterion met**
 F-1, F-3, F-4, F-5, F-6, F-7, F-9, F-10 move from OPEN to FIXED in section 9, each backed by a code change, a passing test (where applicable) and a live verification step above. No capability outside this explicit list was touched.
+
+### Phase 11 — Canonical event model contract (2026-09-19)
+
+**Scope.** Per explicit instruction: define the canonical event model as a
+documented, validated, versioned contract, including mappings from existing
+event sources, validation/error behavior, and compatibility with stored
+events and replay — **before implementing connectors**. No Sysmon/Suricata
+EVE/Splunk HEC connector was implemented in this phase (E-4 stays OPEN by
+design); see `docs/CANONICAL_EVENT_MODEL.md` for the full contract, which is
+the authoritative document for this phase and is not duplicated here.
+
+**Changed**
+- `backend/schemas/canonical_event.py` (new): `CanonicalSecurityEvent` Pydantic v2 model, `schema_version: Literal["1.0"]`, `event_id` assigned once at normalization time, strict severity validation (rejects invalid values instead of silently coercing to `INFO`), 64 KB `raw_log` size cap, `canonical_event_type` computed from `core.taxonomy.EventTaxonomyNormalizer` on every instance, `from_raw()` adapter preserving all pre-existing field-selection fallbacks (`"unknown"` sentinel for host/user, `"generic"`/`"unknown"` for source/event_type), `to_orm_kwargs()` for `models.event.Event` construction.
+- `backend/plugins/parsers/generic.py`: `GenericJSONParser.parse()` reduced to a thin adapter (`CanonicalSecurityEvent.from_raw(raw_data).to_orm_kwargs()`) — both live ingestion and replay already shared this class, so both are now validated by the same contract with no call-site changes required.
+- `backend/replay/engine.py`: a single malformed dataset record no longer kills the whole replay stream — `stream_events()` now catches `CanonicalEventValidationError` per event, logs which index/scenario was skipped, and continues (previously unguarded, a new possible exception from stricter validation would have silently ended the background replay task).
+- `backend/api/ingest.py`: `event_id` returned to the caller is now the same UUID the contract assigned during normalization (`normalized_dict["id"]`), not a second, independently-minted UUID as before — these two values had no reason to ever be compared before, but were always different values in practice.
+- `backend/tests/test_event_integrity.py`: one pre-existing test updated (`Event(id=legacy_id, **legacy)` → `legacy["id"] = legacy_id; Event(**legacy)`) because `_normalized()` now legitimately returns a dict that already contains `id` — a direct, intended consequence of the `event_id` fix above, not a defect.
+
+**Tests**
+- New: `backend/tests/test_canonical_event.py` (17): schema version literal; ingest-shaped payload normalization with a known taxonomy mapping (EventID 4688 → `PROCESS_EXECUTION`); invalid severity rejected; missing severity defaults to `INFO`; oversized `raw_log` rejected; non-dict `raw_log` wrapped not rejected; hostname/user_name default to `"unknown"`; unrecognized event_type passes through unchanged (not overwritten to `"UNKNOWN"`); `event_id` always assigned; `to_orm_kwargs()` constructs a real `Event` row and hashes without error, with `id` proven not to affect the hash; `generic_parser` delegates to the contract and raises the contract's error type; **all 25 real events across all 4 real dataset files** (`datasets/*/events.json`, parametrized, reading the actual files — not fixtures) normalize through the real parser and construct real `Event` rows without error; a dedicated test proves the replay engine skips exactly one deliberately-invalid event out of three and still completes the stream (not a crash, not a silent pass-through).
+- Fixed: `test_event_integrity.py::test_integrity_endpoint_reports_verification_and_legacy_rows` (see above).
+- `docker compose exec backend pytest -v tests/` → **232 passed** (215 baseline + 17 new), after the one fix above. Run twice to confirm stability.
+
+**Verified on the running system**
+- `docker compose restart backend celery_worker` (worker does not hot-reload; confirmed clean restart via `/health` — postgres/redis/qdrant/celery/minio/event bus/ws bridge all `up`).
+- Real `POST /events/ingest` call → `event_id: 731ad377-d314-464c-95e8-81a57b4f52b3`; `GET /events/731ad377-.../integrity` (bearer-authenticated) → `verified: true`, **same event_id** as the ingest response confirmed the fix (previously these were independently generated and had never been compared).
+- A deliberately invalid-severity ingest call (`"severity":"NOT_REAL"`) → HTTP `422`.
+- Real replay (`POST /replay/start {"scenario_name":"credential_theft"}`) through the rewired parser produced a genuine case ("Brute Force + Command and Scripting Interpreter", HIGH), evidence items citing real event IDs, Sigma-boosted `importance_score: 0.92` on the PowerShell evidence — confirming detection rules see byte-identical `raw_log`/`metadata` shape through the new contract. `docker compose logs backend celery_worker` showed no errors, tracebacks, or import failures across the restart, ingest, and replay.
+
+**Known limitations**
+- `canonical_event_type` is not a persisted database column (would require a migration; out of scope while item 5's migration remediation proposal is still pending, per the governing instruction). Detection rules unaffected — they already re-derive it from stored `event_type`/`raw_log` via the same taxonomy function.
+- Confirmed real (not just theoretical) field-naming mismatch: `apt29_simulation`, `apt_blackout` and `insider_threat` datasets each contain some events using `metadata.destination_ip` where `detection/engine.py`'s entity extraction only reads `metadata.ip_address` — those events normalize correctly through this contract but their IP is silently absent from the entity graph. Pre-existing, not introduced or fixed by this phase; documented in `docs/CANONICAL_EVENT_MODEL.md` for Phase 12/connector work to account for.
+- No connectors implemented (E-4 remains OPEN by design — see Scope above).
+- `FILE_OPERATION`/`SYSTEM_ALERT` canonical types remain unreachable (no mapping produces them); no detection rule exists for `NETWORK_TRAFFIC` (D-4) — both pre-existing, carried forward, relevant to which Phase 13 scenarios can be un-blocked later.
+
+**Completion criterion met**
+A documented (`docs/CANONICAL_EVENT_MODEL.md`), validated (17 new tests plus the full 232-test suite), versioned (`schema_version: Literal["1.0"]`, explicit bump policy) canonical event contract exists, is the actual normalization path for both live ingestion and replay (not a parallel unused schema), and is proven compatible with stored events (ORM + integrity hash, unaffected) and replay (all real dataset events + a live replay run). No connector was implemented, per the explicit "before implementing connectors" scope boundary.

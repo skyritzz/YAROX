@@ -1,5 +1,4 @@
 import secrets
-import uuid
 from datetime import datetime, timezone
 from typing import Dict, Any
 from fastapi import APIRouter, Header, HTTPException, status, Depends, Request
@@ -102,10 +101,12 @@ async def ingest_event(
         )
 
     try:
-        # 2. Normalize event into standard YAROX Event ORM representation
+        # 2. Normalize event into standard YAROX Event ORM representation.
+        # The canonical event contract (schemas.canonical_event) assigns event_id
+        # itself, once, at normalization time — reuse it rather than minting a
+        # second, different UUID here (Phase 11 fix: these previously diverged).
         normalized_dict = generic_parser.parse(request.model_dump())
-        event_id = str(uuid.uuid4())
-        normalized_dict["id"] = event_id
+        event_id = str(normalized_dict["id"])
 
         # 3. Publish to central Event Bus ('EventNormalized' topic)
         await event_bus.publish("EventNormalized", normalized_dict)
