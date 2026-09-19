@@ -84,6 +84,7 @@ class EventTaxonomyNormalizer:
         4672: CanonicalEventType.PRIVILEGE_CHANGE,
         1: CanonicalEventType.PROCESS_EXECUTION, # Sysmon Process Create
         3: CanonicalEventType.NETWORK_TRAFFIC,   # Sysmon Network Connection
+        11: CanonicalEventType.FILE_OPERATION,   # Sysmon File Create
     }
 
     @classmethod

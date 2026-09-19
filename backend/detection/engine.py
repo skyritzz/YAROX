@@ -11,7 +11,8 @@ from detection.rules import (
     FailedLoginBruteForce,
     PrivilegeEscalation,
     SuspiciousProcessExecution,
-    LateralMovement
+    LateralMovement,
+    _event_metadata,
 )
 
 SEVERITY_ORDER = {
@@ -71,7 +72,7 @@ class DetectionEngine:
                 
                 # Evaluate Sigma Rules
                 from rules.sigma.engine import sigma_engine
-                matches = sigma_engine.evaluate(event.raw_log.get('metadata', {}))
+                matches = sigma_engine.evaluate(_event_metadata(event))
                 
                 sigma_reason = ""
                 sigma_risk = 0.8
@@ -81,7 +82,7 @@ class DetectionEngine:
                 
                 # Check if identical evidence already exists in this case
                 raw_dict = event.raw_log if isinstance(event.raw_log, dict) else {}
-                raw_meta = raw_dict.get('metadata', {})
+                raw_meta = _event_metadata(event)
                 artifact_val = raw_meta.get('command_line') or raw_dict.get('command_line') or event.user_name or event.hostname
                 ev_type = explanation['evidence_type']
                 
@@ -154,11 +155,12 @@ class DetectionEngine:
         host = await get_or_create(EntityType.HOST, event.hostname)
         
         raw_dict = event.raw_log if isinstance(event.raw_log, dict) else {}
-        process_name = raw_dict.get('metadata', {}).get('process_name') or raw_dict.get('process_name')
+        metadata = _event_metadata(event)
+        process_name = metadata.get('process_name') or raw_dict.get('process_name')
         process = await get_or_create(EntityType.PROCESS, process_name)
-        
+
         # IP addresses from metadata
-        ip = await get_or_create(EntityType.IP, raw_dict.get('metadata', {}).get('ip_address') or raw_dict.get('ip'))
+        ip = await get_or_create(EntityType.IP, metadata.get('ip_address') or raw_dict.get('ip'))
         
         if user and host:
             db.add(SecurityRelationship(source_id=user.id, target_id=host.id, action="logged into", case_id=case_id))

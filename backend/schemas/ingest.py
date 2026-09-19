@@ -50,3 +50,34 @@ class IngestMetricsResponse(BaseModel):
     auth_failures: int
     last_event_timestamp: Optional[str] = None
     rate_limit_per_minute: int
+
+
+class SysmonIngestRequest(BaseModel):
+    """
+    One raw Sysmon event, in the flattened JSON shape shippers like Winlogbeat/NXLog
+    produce (field casing as Sysmon emits it: 'EventID', 'UtcTime', 'Hostname', ...).
+    Deliberately not a field-by-field schema: which fields are present varies by
+    EventID (Process Create vs Network Connect vs File Create carry different
+    fields) — plugins.parsers.sysmon.SysmonParser is the single source of field
+    validation, same as the canonical contract is for every other source. One
+    event per request; batched delivery is a documented limitation, not supported yet.
+    """
+    event: Dict[str, Any] = Field(..., description="The raw Sysmon event object, e.g. {'EventID': 1, 'UtcTime': '...', 'Hostname': '...', 'Image': '...', 'CommandLine': '...', ...}")
+
+    @field_validator("event")
+    @classmethod
+    def validate_payload_size(cls, v: Dict[str, Any]) -> Dict[str, Any]:
+        serialized = json.dumps(v)
+        if len(serialized.encode("utf-8")) > MAX_PAYLOAD_SIZE_BYTES:
+            raise ValueError(f"Payload size ({len(serialized.encode('utf-8'))} bytes) exceeds maximum allowable limit of {MAX_PAYLOAD_SIZE_BYTES} bytes (64 KB).")
+        return v
+
+
+class SysmonIngestResponse(BaseModel):
+    status: str  # "accepted" | "duplicate"
+    event_id: str
+    timestamp: str
+    hostname: str
+    event_type: str
+    canonical_event_type: str
+    ingest_mode: str = "LIVE"

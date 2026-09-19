@@ -88,3 +88,27 @@ def verify_event_integrity(event: Any) -> Optional[bool]:
     if not getattr(event, "payload_sha256", None):
         return None
     return compute_event_hash(event_fields_from_model(event)) == event.payload_sha256
+
+
+async def find_duplicate_event_id(db: Any, payload_sha256: str) -> Optional[Any]:
+    """
+    Best-effort duplicate check by content hash: two events with identical
+    evidentiary content (HASHED_FIELDS above) hash identically, by design.
+    Used by connectors whose upstream shipper may redeliver the same record
+    (e.g. Sysmon/Winlogbeat resending after a restart before it flushes its own
+    read-offset checkpoint).
+
+    Not a hard uniqueness guarantee: there is no unique constraint on
+    events.payload_sha256 (adding one needs a migration; out of scope while the
+    Alembic fresh-install chain remediation is still only a proposal — see
+    docs/MIGRATION_REMEDIATION_PROPOSAL.md), so two near-simultaneous identical
+    submissions can race past this check and both be stored. It reliably
+    catches the common case: a retried or redelivered identical record
+    arriving after the first one has already been persisted.
+    """
+    from sqlalchemy import select
+
+    from models.event import Event
+
+    result = await db.execute(select(Event.id).where(Event.payload_sha256 == payload_sha256).limit(1))
+    return result.scalar_one_or_none()

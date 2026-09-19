@@ -21,6 +21,28 @@ def _observation_id(event: Event) -> str:
     return str(event.id) if getattr(event, "id", None) else f"transient:{uuid.uuid4()}"
 
 
+def _event_metadata(event: Event) -> Dict[str, Any]:
+    """
+    The authoritative source for structured per-event fields (command_line,
+    process_name, ip_address, ...) is Event.metadata_ — schemas.canonical_event.
+    CanonicalSecurityEvent treats metadata as a field distinct from raw_log, not
+    nested inside it, and to_orm_kwargs() stores them as separate columns.
+
+    Falls back to raw_log['metadata'] for legacy rows that pre-date the
+    canonical contract and duplicated metadata inside raw_log instead (every
+    replay dataset happens to do this, which is why it worked before). Reading
+    only raw_log['metadata'] was a real defect, found during Phase 11 connector
+    work: it silently missed metadata_ for any caller — like a real Sysmon
+    connector — that correctly keeps raw_log as the untouched source payload
+    and supplies metadata as a separate field rather than duplicating it.
+    """
+    metadata = getattr(event, "metadata_", None)
+    if metadata:
+        return metadata
+    raw_log = event.raw_log if isinstance(event.raw_log, dict) else {}
+    return raw_log.get("metadata") or {}
+
+
 class BaseDetectionRule(ABC):
     def __init__(self):
         self.name = self.__class__.__name__
@@ -90,7 +112,7 @@ class SuspiciousProcessExecution(BaseDetectionRule):
         evt_type = event.event_type.lower()
         if c_type == CanonicalEventType.PROCESS_EXECUTION or evt_type in ['process create', 'process execution', 'process creation']:
             raw_dict = event.raw_log if isinstance(event.raw_log, dict) else {}
-            metadata = raw_dict.get('metadata', {})
+            metadata = _event_metadata(event)
             raw = str(metadata.get('command_line', raw_dict.get('command_line', ''))).lower()
             if 'powershell' in raw or 'cmd.exe' in raw or '-enc' in raw or 'encodedcommand' in raw:
                 return True
@@ -98,7 +120,7 @@ class SuspiciousProcessExecution(BaseDetectionRule):
 
     def explain(self, event: Event) -> Dict[str, Any]:
         raw_dict = event.raw_log if isinstance(event.raw_log, dict) else {}
-        metadata = raw_dict.get('metadata', {})
+        metadata = _event_metadata(event)
         cmdline = metadata.get('command_line') or raw_dict.get('command_line', 'Unknown')
         return {
             "description": f"Suspicious command line execution detected: {cmdline}",

@@ -3,14 +3,25 @@ from datetime import datetime, timezone
 from typing import Dict, Any
 from fastapi import APIRouter, Header, HTTPException, status, Depends, Request
 from fastapi.security import APIKeyHeader
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.config import settings
 from core.events import event_bus
+from core.integrity import compute_event_hash, find_duplicate_event_id
 from core.rate_limiter import ingestion_rate_limiter
 from core.auth import require_authenticated
+from database.session import get_db
 from models.user import User
-from schemas.ingest import IngestEventRequest, IngestEventResponse, IngestMetricsResponse
+from schemas.canonical_event import CanonicalEventValidationError
+from schemas.ingest import (
+    IngestEventRequest,
+    IngestEventResponse,
+    IngestMetricsResponse,
+    SysmonIngestRequest,
+    SysmonIngestResponse,
+)
 from plugins.parsers.generic import generic_parser
+from plugins.parsers.sysmon import sysmon_parser
 
 router = APIRouter()
 
@@ -129,6 +140,91 @@ async def ingest_event(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Failed to normalize and process telemetry event: {str(e)}"
         )
+
+@router.post("/sysmon", response_model=SysmonIngestResponse, status_code=status.HTTP_202_ACCEPTED)
+async def ingest_sysmon_event(
+    request: SysmonIngestRequest,
+    raw_request: Request,
+    api_key: str = Depends(verify_ingestion_api_key),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Sysmon Connector (Phase 11): accepts one raw Sysmon event (the flattened
+    JSON shape Winlogbeat/NXLog-style shippers produce), normalizes it through
+    plugins.parsers.sysmon.SysmonParser into the same canonical contract every
+    other source uses, and publishes it on the same 'EventNormalized' topic —
+    reusing live ingestion's auth, rate limiting, durable event bus, storage
+    and detection pipeline unchanged.
+
+    Supports Sysmon EventID 1 (Process Create), 3 (Network Connect), 11 (File
+    Create). Any other EventID, or a missing/non-integer EventID, is rejected
+    with 422 — see plugins/parsers/sysmon.py for the full mapping and
+    docs/CANONICAL_EVENT_MODEL.md "Connectors" for why 4624/4625/4672 (a
+    different provider, not Sysmon) are intentionally not accepted here.
+    """
+    metrics_tracker.record_received()
+
+    client_ip = raw_request.client.host if raw_request.client else "default_shipper"
+    is_allowed, retry_after = await ingestion_rate_limiter.check_rate_limit(f"{client_ip}:{api_key[:8]}")
+    if not is_allowed:
+        metrics_tracker.record_rate_limited()
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Telemetry ingestion rate limit exceeded (Max {settings.RATE_LIMIT_INGEST_PER_MINUTE} events/min). Try again in {retry_after} seconds.",
+            headers={"Retry-After": str(retry_after)}
+        )
+
+    try:
+        canonical_event = sysmon_parser.to_canonical(request.event)
+    except CanonicalEventValidationError as e:
+        metrics_tracker.record_rejected()
+        print(f"[INGEST ERROR] Sysmon event rejected: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Failed to normalize Sysmon event: {str(e)}"
+        )
+
+    normalized_dict = canonical_event.to_orm_kwargs()
+
+    # Best-effort duplicate suppression: a redelivered identical record (e.g. a
+    # shipper resending after a restart) is acknowledged idempotently instead of
+    # being stored twice. See core.integrity.find_duplicate_event_id for the
+    # race-window caveat (no DB uniqueness constraint backs this).
+    content_hash = compute_event_hash(normalized_dict)
+    existing_id = await find_duplicate_event_id(db, content_hash)
+    if existing_id is not None:
+        metrics_tracker.record_accepted()
+        return SysmonIngestResponse(
+            status="duplicate",
+            event_id=str(existing_id),
+            timestamp=normalized_dict["timestamp"].isoformat(),
+            hostname=normalized_dict["hostname"],
+            event_type=normalized_dict["event_type"],
+            canonical_event_type=canonical_event.canonical_event_type.value,
+            ingest_mode="LIVE",
+        )
+
+    try:
+        await event_bus.publish("EventNormalized", normalized_dict)
+        metrics_tracker.record_accepted()
+    except Exception as e:
+        metrics_tracker.record_rejected()
+        print(f"[INGEST ERROR] Failed to publish Sysmon event: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Failed to process Sysmon event: {str(e)}"
+        )
+
+    return SysmonIngestResponse(
+        status="accepted",
+        event_id=str(normalized_dict["id"]),
+        timestamp=normalized_dict["timestamp"].isoformat(),
+        hostname=normalized_dict["hostname"],
+        event_type=normalized_dict["event_type"],
+        canonical_event_type=canonical_event.canonical_event_type.value,
+        ingest_mode="LIVE",
+    )
+
 
 @router.get("/metrics", response_model=IngestMetricsResponse)
 async def get_ingest_metrics(current_user: User = Depends(require_authenticated)):
