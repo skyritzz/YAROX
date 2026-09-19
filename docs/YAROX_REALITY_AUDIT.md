@@ -139,9 +139,9 @@ The "Restoration" column is updated as phases complete. `OPEN` = not yet address
 | X-2 | Test isolation | BROKEN | Tests use `settings.DATABASE_URL` (dev DB); `test_celery_broker_dispatch_memory_indexing` sends real Celery task; `test_reopen_case_lifecycle` resolves without mocking `.delay` → worker FK failure; Qdrant test collections on dev Qdrant | `tests/test_memory_pipeline.py`, `tests/test_phase5_case_management.py` | Tests corrupt dev data | Test DB `yarox_test`, isolated Celery broker, test Qdrant prefix, Redis DB 15, guard assertion | **FIXED (Phase 1)** |
 | X-3 | Mock-heavy tests | PARTIAL | Agent/evaluation tests patch `llm_service.generate`, use `AsyncMock` sessions | `evaluation/agent_eval.py`, several tests | Prove logic, not integration | Keep as unit tests; add real integration tests | OPEN |
 | X-4 | Blocking sleep in async test | PARTIAL | `time.sleep(2)` inside async test | `tests/test_memory_pipeline.py` | Blocks loop | Replaced with `asyncio.sleep` + in-process test worker | **FIXED (Phase 1)** |
-| X-5 | Alembic migrations | BROKEN | `alembic upgrade head` on an empty database fails: base revision `f070db4817a2` is empty (`pass`), `8532d6f9c999` is empty, `cba64ddf4a02` alters non-existent `investigation_cases`, `24d74fa147f3` reads legacy `agent_actions`. Real schema only exists because `api/main.py` runs `Base.metadata.create_all` at startup | `alembic/versions/*` | Fresh deployments cannot be built from migrations; schema changes are unmanaged | Squash into a baseline under ID `7a3e8b1d9c4f` (**blocked: requires owner approval to delete historical migration files**). Interim: fresh DBs built with `create_all` + `alembic stamp head`; new migrations are additive and tested from a frozen baseline | PARTIAL — `scripts/migrate.py` is now the only schema owner (empty DB: create_all+stamp; else upgrade); app startup no longer runs `create_all` and refuses an outdated schema. Squash of historical chain still needs owner approval |
+| X-5 | Alembic migrations | BROKEN | `alembic upgrade head` on an empty database fails: base revision `f070db4817a2` is empty (`pass`), `8532d6f9c999` is empty, `cba64ddf4a02` alters non-existent `investigation_cases`, `24d74fa147f3` reads legacy `agent_actions`. Real schema only exists because `api/main.py` runs `Base.metadata.create_all` at startup | `alembic/versions/*` | Fresh deployments cannot be built from migrations; schema changes are unmanaged | Squash into a baseline under ID `7a3e8b1d9c4f` (**blocked: requires owner approval to delete historical migration files**). Interim: fresh DBs built with `create_all` + `alembic stamp head`; new migrations are additive and tested from a frozen baseline | PARTIAL — `scripts/migrate.py` is now the only schema owner (empty DB: create_all+stamp; else upgrade); app startup no longer runs `create_all` and refuses an outdated schema. **A non-destructive remediation (insert a new genesis migration ahead of the current root; do not delete/rewrite the 5 broken files) is proposed in `docs/MIGRATION_REMEDIATION_PROPOSAL.md` Part 1 — not yet implemented, pending review.** |
 | X-6 | Model / schema drift | BROKEN | Migrated dev schema has `ON DELETE SET NULL` on `investigation_cases.assigned_to_user_id`/`resolved_by_user_id`; models had no `ondelete`. Dev DB is also **missing** `ix_investigation_cases_assigned_to_user_id` and `ix_investigation_cases_resolved_by_user_id` that the model declares | `models/investigation.py` | Tests built from models diverge from production schema | Models aligned (`ondelete="SET NULL"`); missing indexes to be added by next migration | **FIXED (Phase 2)** — FK aligned (Phase 1); migration `b7c1e2d3f4a5` creates missing indexes (verified in dev `pg_indexes`) |
-| X-7 | Historical dev-data contamination | BROKEN | Dev DB contains 27 users (3 seeded) and test-titled cases/Qdrant points from pre-isolation test runs | dev Postgres/Qdrant | Dev data is not trustworthy | Owner decision on cleanup; orphan vectors handled in Phase 4 | OPEN |
+| X-7 | Historical dev-data contamination | BROKEN | Dev DB contains 27 users (3 seeded) and test-titled cases/Qdrant points from pre-isolation test runs | dev Postgres/Qdrant | Dev data is not trustworthy | Owner decision on cleanup; orphan vectors handled in Phase 4 | OPEN — precise inventory (95 cases, 83% from a pre-isolation 2026-08-21–23 burst; 24 of 27 users auto-generated in an 80-second window), backup commands, and a purge criterion that preserves cases cited as evidence in this document are proposed in `docs/MIGRATION_REMEDIATION_PROPOSAL.md` Part 2 — not yet executed, pending review. |
 
 ## 9. Frontend
 
@@ -620,3 +620,39 @@ A documented (`docs/CANONICAL_EVENT_MODEL.md`), validated (17 new tests plus the
 
 **Completion criterion met**
 Per the user's explicit checklist: durable event delivery (live restart test + `test_event_bus.py`), shared detection state (live replay + `test_event_bus.py` shared-window tests), restart recovery (live stop/publish/restart proof), and multi-worker behavior (live two-real-process proof) are each backed by both a test and independent live verification against the running system, not treated as complete merely because code existed on a parked branch. Two real regressions the parked branch had not caught were found specifically *because* this phase insisted on live verification rather than trusting "216 passed" from months prior, and both are now fixed, tested (with confirmed-failing-without-the-fix regression tests), and re-verified live.
+
+### Item 5 — Migration remediation proposal + data/files inventory (2026-09-19)
+
+Per explicit instruction: no migration file was deleted, no dev case was
+purged, and no untracked file was removed. Instead, `docs/MIGRATION_REMEDIATION_PROPOSAL.md`
+was produced, covering:
+
+- **Part 1**: precisely which 5 of the 10 Alembic files are non-functional on
+  an empty database and why (root cause: Alembic was adopted after a live
+  schema already existed), why deleting/rewriting them now is unsafe for any
+  database that might currently be stamped mid-chain, and a non-destructive
+  fix (insert one new genesis migration ahead of the current root, change one
+  `down_revision` line, touch nothing else) — backed by existing, already-passing
+  test evidence (`tests/test_migrations.py` already proves the equivalent DDL
+  in `tests/support/baseline_schema.py` produces a zero-diff schema). A
+  verification plan for implementing this in a future phase is included.
+  Not implemented in this session.
+- **Part 2**: a precise, queried-live inventory of dev-data contamination
+  (X-7) — 95 cases, 83% traceable to a pre-isolation burst on 2026-08-21–23;
+  24 of 27 users auto-generated in an 80-second window on 2026-08-23; 8/8
+  memory records match Qdrant points 1:1, no orphans. A backup plan
+  (`pg_dump`/`pg_restore`, Qdrant snapshot API, both already-standard tooling)
+  and a purge criterion that explicitly preserves any case cited by ID
+  elsewhere in this document. Not executed.
+- **Part 3**: inventory of the 4 originally-flagged untracked files, with one
+  correction to the prior session's characterization — `backend/yarox.db` is
+  actually already git-tracked (0 bytes, confirmed via `git ls-files`), not
+  untracked, so it carries no data-loss risk. The two videos (43 MB + 216 MB,
+  genuinely untracked, no git history) are the only ones needing an external
+  backup before any deletion decision; `test_ws.py` is a superseded manual
+  script. Backup commands included; no deletion proposed.
+
+**Completion criterion met**: a reviewable proposal exists for every part of
+item 5, backed by live-queried facts (not estimates) and, for the migration
+fix specifically, by an already-existing passing test that validates the
+core mechanism being proposed. Nothing destructive has been executed.
