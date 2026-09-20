@@ -7,7 +7,6 @@ No mocks of the systems under test: the end-to-end tests use the real Redis
 Streams event bus, real Postgres, and the real detection engine — the same
 pattern already established and passing in tests/test_event_bus.py.
 """
-import asyncio
 import uuid
 from datetime import datetime, timezone
 
@@ -281,13 +280,10 @@ async def running_event_bus():
     event_bus.stop()
 
 
-async def _wait_until(condition, timeout=10.0, interval=0.1) -> bool:
-    deadline = asyncio.get_event_loop().time() + timeout
-    while asyncio.get_event_loop().time() < deadline:
-        if await condition():
-            return True
-        await asyncio.sleep(interval)
-    return False
+# See scenarios/wait.py for the implementation — extracted there (Phase 14) once the
+# scenario orchestrator needed the exact same pattern as production code, replacing
+# this and two near-identical copies in test_suricata_connector.py/test_splunk_connector.py.
+from scenarios.wait import wait_until as _wait_until
 
 
 @pytest.mark.asyncio

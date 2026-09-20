@@ -895,3 +895,84 @@ untouched. Phase 13 scenario orchestration has not been started, per
 instruction. Full details, including explicit scope exclusions (no C2
 inference from generic flow data, no file-access/sensitivity baselining),
 in `docs/PHASE_13_DETECTION_FOUNDATIONS.md`.
+
+### Phase 14 — Scenario orchestration (2026-09-21)
+
+Full account in `docs/PHASE_14_SCENARIO_ORCHESTRATION.md` — summarized here.
+
+Built a reusable orchestrator (`backend/scenarios/`: `schemas.py`,
+`orchestrator.py`, `definitions.py`, `wait.py`, `cli.py`) that mechanically
+verifies YAROX's full pipeline — real event ingestion, durable storage,
+detection, case correlation, a real Celery-dispatched multi-agent
+investigation reaching a terminal state, and a persisted evidence-linked
+report — against a versioned scenario contract that keeps expected outcomes
+strictly separate from actual results. Reuses `replay.engine.ReplayEngine.
+load_dataset()` and the real `POST /events/ingest/*` HTTP endpoints for
+event dispatch; no parallel replay/event-publishing system was built.
+
+**Three real bugs found and fixed while validating against the running
+stack**, none caught by writing the code: (1) a race between confirming
+event storage and detection actually finishing (detection runs off a
+separate real event-bus consumer); (2) a race in "has the investigation
+finished" itself — the first design treated "no `AgentExecution` row is
+`running`" as terminal, which a live run proved wrong (the gap between one
+agent finishing and the next one's row being created meant a real
+investigation's SOC Lead/report step was skipped entirely) — fixed by
+switching to `InvestigationCase.status` leaving `ANALYZING` (`core/
+case_state.py`'s state machine, set exactly once at the true end of the
+run) as the authoritative signal; (3) a test-infrastructure bug that would
+have silently made the LLM-marked tests meaningless — pytest's isolated
+environment dispatches Celery tasks onto Redis DB 15, but the real
+`yarox-celery-worker` container only consumes DB 0 (documented in
+`conftest.py`'s own module docstring), so a detection-triggered dispatch
+never reached any worker at all under pytest — fixed by wrapping the
+LLM-marked tests in the existing `tests/support/celery.py` in-process test
+worker, extended with a configurable `shutdown_timeout` (backward
+compatible) since a real multi-minute LLM task can still be finishing
+housekeeping when the test's `with` block exits. A fourth, real,
+unplanned-for **system behavior** (not a bug) was also observed live: the
+insider-threat scenario's 5 events reliably triggers the real
+rerun-on-new-evidence mechanism (two full investigation passes), roughly
+doubling wall-clock time under local Ollama inference — documented, not
+treated as a defect.
+
+**Three scenarios**, each reusing real, already-proven fixtures (no
+fabricated telemetry): `suricata_intrusion_alert` (the same alert shape
+already used in Phase 11/13), `insider_threat_archive_and_transfer`
+(`datasets/insider_threat/events.json` via the real `ReplayEngine.
+load_dataset()`), `benign_negative_control` (`evaluation/datasets/
+ground_truth.json`'s existing `benign_user_logon` scenario, reused verbatim).
+
+**Tests**: 18 new (`tests/test_scenario_orchestration.py`) — 15 deterministic
+or real-stack-without-LLM (contract validation, isolation-tagging effects
+including an explicit proof the per-execution hostname suffix never changes
+whether a rule matches, duplicate replay at both a documented race window
+and a spaced redelivery, concurrent-execution isolation, cleanup safety
+against an unrelated pre-existing case), 3 marked `@pytest.mark.llm`
+(reusing `pytest.ini`'s existing, previously-unused marker; see bug 3
+above) requiring the in-process test Celery worker and a reachable Ollama
+endpoint — Scenario A/B's full lifecycles plus the honest-timeout-reporting
+test (a deliberately-too-short `investigation_timeout` correctly reported
+as failure, never a false pass, with cleanup refusing to run while the
+investigation is genuinely still executing). All three were run and
+**genuinely passed**: Scenario A in 97.74s, the timeout test in 192.46s,
+Scenario B in 295.94s (the two-pass rerun behavior above).
+`docker compose exec backend pytest -q tests/` → **342 passed**
+(324 baseline + 18), zero regressions.
+
+Also consolidated three near-identical private `_wait_until` test helpers
+(Sysmon/Suricata/Splunk connector tests) into `backend/scenarios/wait.py`,
+since the orchestrator needed the identical pattern as production code.
+
+**Completion criterion met**: the full pipeline is mechanically verified,
+end to end, by a reusable module backed by 18 tests (all real-stack ones
+run and passing, including the 3 requiring a reachable LLM) and independent
+live verification against the real dev database and the real `yarox-celery-
+worker`/Ollama for all three scenarios — direct orchestrator invocation for
+Scenarios A and B (including the two-pass rerun and the cleanup-refusal
+behavior above), the new `scenarios/cli.py` entry point for Scenario C
+(exit code 0, correct JSON result, cleanup performed) — not treated as
+complete merely because the pytest suite (run against the isolated test
+database) passed. No scenario claims C2 identification, confirmed
+malicious intent, or enterprise readiness beyond what its underlying,
+already-hedged detection rules assert.

@@ -14,12 +14,16 @@ from workers.celery_app import celery_app
 
 
 @contextmanager
-def running_test_worker():
+def running_test_worker(shutdown_timeout: float = 30):
+    """``shutdown_timeout`` is how long the worker thread gets to exit cleanly once the
+    `with` block ends — raised above the default 30s by real-LLM-backed callers (Phase 14's
+    scenario orchestration tests), where a task can still be finishing housekeeping
+    (autoretry bookkeeping, ack) shortly after the polling caller already observed success."""
     with start_worker(
         celery_app,
         pool="solo",
         concurrency=1,
         perform_ping_check=False,
-        shutdown_timeout=30,
+        shutdown_timeout=shutdown_timeout,
     ) as worker:
         yield worker
