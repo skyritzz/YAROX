@@ -12,6 +12,9 @@ from detection.rules import (
     PrivilegeEscalation,
     SuspiciousProcessExecution,
     LateralMovement,
+    NetworkIntrusionAlert,
+    DataStagingViaArchiveUtility,
+    LargeExternalDataTransfer,
     _event_metadata,
 )
 
@@ -28,112 +31,146 @@ class DetectionEngine:
             FailedLoginBruteForce(),
             PrivilegeEscalation(),
             SuspiciousProcessExecution(),
-            LateralMovement()
+            LateralMovement(),
+            NetworkIntrusionAlert(),
+            DataStagingViaArchiveUtility(),
+            LargeExternalDataTransfer(),
         ]
 
     async def process_event(self, db: AsyncSession, event: Event) -> InvestigationCase | None:
+        """
+        Evaluates every rule against the event, not just the first match.
+
+        Previously this returned as soon as any one rule matched, silently
+        skipping every rule listed after it in ``self.rules`` for that event
+        (YAROX_REALITY_AUDIT.md D-1, confirmed: a single event's raw
+        ``event_type`` string is checked directly by some rules — e.g.
+        PrivilegeEscalation's ``'privilege' in evt_type`` alongside
+        LateralMovement's ``'session' in evt_type`` — so a compound event_type
+        string could satisfy more than one rule, and with the old code the
+        rules after the first match were never even evaluated). A single
+        event still has exactly one user/host, so correlation_engine reliably
+        finds the same case for a second match on the same event; the last
+        case touched is returned, keeping the existing single-case contract
+        every caller (consumers/detection_consumer.py, evaluation/runner.py)
+        already relies on.
+        """
+        matched_case: InvestigationCase | None = None
         for rule in self.rules:
             if await rule.match(event):
-                explanation = rule.explain(event)
-                
-                from correlation.engine import correlation_engine
-                
-                # Check for Correlation with existing active case
-                case = await correlation_engine.find_related_case(db, event, explanation['mitre_technique_name'])
-                
-                if not case:
-                    # Create New Case
-                    case = InvestigationCase(
-                        title=f"{explanation['mitre_technique_name']}",
-                        description=explanation['description'],
-                        status=InvestigationStatus.OPEN,
-                        severity=explanation['severity']
-                    )
-                    db.add(case)
-                    await db.flush() # flush to get case.id
-                else:
-                    # Update Existing Case
-                    case.updated_at = datetime.now(timezone.utc)
-                    
-                    # In-flight severity escalation (Never downgrade existing severity)
-                    new_sev = explanation.get('severity')
-                    if new_sev:
-                        cur_rank = SEVERITY_ORDER.get(case.severity, 1)
-                        new_rank = SEVERITY_ORDER.get(new_sev, 1)
-                        if new_rank > cur_rank:
-                            case.severity = new_sev
-                            
-                    # Update title if multi-stage progression adds new technique
-                    new_tech_name = explanation.get('mitre_technique_name')
-                    if new_tech_name and new_tech_name not in case.title:
-                        case.title = f"{case.title} + {new_tech_name}"
-                        
-                    db.add(case)
-                
-                # Evaluate Sigma Rules
-                from rules.sigma.engine import sigma_engine
-                matches = sigma_engine.evaluate(_event_metadata(event))
-                
-                sigma_reason = ""
-                sigma_risk = 0.8
-                if matches:
-                    sigma_reason = f"\n\nMatched Sigma Rule: {', '.join([r.title for r in matches])}"
-                    sigma_risk = 0.92
-                
-                # Check if identical evidence already exists in this case
-                raw_dict = event.raw_log if isinstance(event.raw_log, dict) else {}
-                raw_meta = _event_metadata(event)
-                artifact_val = raw_meta.get('command_line') or raw_dict.get('command_line') or event.user_name or event.hostname
-                ev_type = explanation['evidence_type']
-                
-                existing_ev = await db.execute(
-                    select(EvidenceItem).where(
-                        EvidenceItem.case_id == case.id,
-                        EvidenceItem.artifact == artifact_val,
-                        EvidenceItem.evidence_type == ev_type
-                    )
-                )
-                if not existing_ev.scalars().first():
-                    evidence = EvidenceItem(
-                        case_id=case.id,
-                        event_id=event.id,
-                        evidence_type=ev_type,
-                        source=event.source,
-                        timestamp=event.timestamp,
-                        artifact=artifact_val,
-                        reason=explanation['description'] + sigma_reason,
-                        importance_score=sigma_risk
-                    )
-                    db.add(evidence)
-                
-                # Create MITRE Technique if it doesn't already exist for this case (Deduplication)
-                tech_id = explanation['mitre_technique_id']
-                existing_tech = await db.execute(
-                    select(AttackTechnique).where(
-                        AttackTechnique.case_id == case.id,
-                        AttackTechnique.technique_id == tech_id
-                    )
-                )
-                if not existing_tech.scalars().first():
-                    mitre = AttackTechnique(
-                        case_id=case.id,
-                        technique_id=tech_id,
-                        technique_name=explanation['mitre_technique_name'],
-                        tactic=explanation['mitre_tactic'],
-                        # Deterministic rule match: the technique is asserted by the rule itself
-                        confidence=1.0,
-                        reason=explanation['description']
-                    )
-                    db.add(mitre)
-                
-                await db.commit()
-                
-                # Extract Graph Entities
-                await self._extract_entities(db, event, case.id)
-                await db.commit()
-                
-                return case
-        return None
+                matched_case = await self._record_match(db, event, rule)
+        return matched_case
+
+    async def _record_match(self, db: AsyncSession, event: Event, rule: BaseDetectionRule) -> InvestigationCase:
+        explanation = rule.explain(event)
+
+        from correlation.engine import correlation_engine
+
+        # Check for Correlation with existing active case
+        case = await correlation_engine.find_related_case(db, event, explanation['mitre_technique_name'])
+
+        if not case:
+            # Create New Case
+            case = InvestigationCase(
+                title=f"{explanation['mitre_technique_name']}",
+                description=explanation['description'],
+                status=InvestigationStatus.OPEN,
+                severity=explanation['severity']
+            )
+            db.add(case)
+            await db.flush() # flush to get case.id
+        else:
+            # Update Existing Case
+            case.updated_at = datetime.now(timezone.utc)
+
+            # In-flight severity escalation (Never downgrade existing severity)
+            new_sev = explanation.get('severity')
+            if new_sev:
+                cur_rank = SEVERITY_ORDER.get(case.severity, 1)
+                new_rank = SEVERITY_ORDER.get(new_sev, 1)
+                if new_rank > cur_rank:
+                    case.severity = new_sev
+
+            # Update title if multi-stage progression adds new technique
+            new_tech_name = explanation.get('mitre_technique_name')
+            if new_tech_name and new_tech_name not in case.title:
+                case.title = f"{case.title} + {new_tech_name}"
+
+            db.add(case)
+
+        # Evaluate Sigma Rules
+        from rules.sigma.engine import sigma_engine
+        matches = sigma_engine.evaluate(_event_metadata(event))
+
+        sigma_reason = ""
+        sigma_risk = 0.8
+        if matches:
+            sigma_reason = f"\n\nMatched Sigma Rule: {', '.join([r.title for r in matches])}"
+            sigma_risk = 0.92
+
+        # Check if identical evidence already exists in this case. Prefers the most
+        # specific available field so distinct findings of the same evidence_type
+        # (e.g. two different Suricata signatures, both NETWORK_INTRUSION_ALERT)
+        # don't collide on a shared, less-specific fallback like hostname — a real
+        # gap found while adding NetworkIntrusionAlert/LargeExternalDataTransfer,
+        # which have no command_line to key on the way the process-centric rules do.
+        raw_dict = event.raw_log if isinstance(event.raw_log, dict) else {}
+        raw_meta = _event_metadata(event)
+        artifact_val = (
+            raw_meta.get('command_line') or raw_dict.get('command_line')
+            or raw_meta.get('signature')
+            or raw_meta.get('destination_ip') or raw_meta.get('ip_address')
+            or event.user_name or event.hostname
+        )
+        ev_type = explanation['evidence_type']
+
+        existing_ev = await db.execute(
+            select(EvidenceItem).where(
+                EvidenceItem.case_id == case.id,
+                EvidenceItem.artifact == artifact_val,
+                EvidenceItem.evidence_type == ev_type
+            )
+        )
+        if not existing_ev.scalars().first():
+            evidence = EvidenceItem(
+                case_id=case.id,
+                event_id=event.id,
+                evidence_type=ev_type,
+                source=event.source,
+                timestamp=event.timestamp,
+                artifact=artifact_val,
+                reason=explanation['description'] + sigma_reason,
+                importance_score=sigma_risk
+            )
+            db.add(evidence)
+
+        # Create MITRE Technique if it doesn't already exist for this case (Deduplication)
+        tech_id = explanation['mitre_technique_id']
+        existing_tech = await db.execute(
+            select(AttackTechnique).where(
+                AttackTechnique.case_id == case.id,
+                AttackTechnique.technique_id == tech_id
+            )
+        )
+        if not existing_tech.scalars().first():
+            mitre = AttackTechnique(
+                case_id=case.id,
+                technique_id=tech_id,
+                technique_name=explanation['mitre_technique_name'],
+                tactic=explanation['mitre_tactic'],
+                # Deterministic rule match: the technique is asserted by the rule itself
+                confidence=1.0,
+                reason=explanation['description']
+            )
+            db.add(mitre)
+
+        await db.commit()
+
+        # Extract Graph Entities
+        await self._extract_entities(db, event, case.id)
+        await db.commit()
+
+        return case
 
     async def _extract_entities(self, db: AsyncSession, event: Event, case_id):
         from models.entity import SecurityEntity, SecurityRelationship, EntityType

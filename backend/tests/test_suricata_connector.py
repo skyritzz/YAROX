@@ -7,12 +7,15 @@ No mocks of the systems under test: the end-to-end test uses the real Redis
 Streams event bus, real Postgres, same pattern already established in
 tests/test_sysmon_connector.py and tests/test_event_bus.py.
 
-Note on detection: no existing detection rule targets SYSTEM_ALERT or
-NETWORK_TRAFFIC (detection/rules.py) — see docs/CANONICAL_EVENT_MODEL.md "How
-to add another connector" step 7 and YAROX_REALITY_AUDIT.md D-4/D-5. The
-end-to-end test below therefore verifies real storage and hash integrity, not
-a detection match — asserting a match here would be asserting behavior this
-connector does not claim to provide.
+Note on detection: as of Phase 13 (detection/rules.py's NetworkIntrusionAlert,
+see tests/test_phase13_detection.py), SYSTEM_ALERT events *do* now reach a
+real detection rule and produce a case — this was not true when this
+connector was first built (D-4 was fully open then). NETWORK_TRAFFIC events
+still have no IDS-signature-based rule (LargeExternalDataTransfer is a
+volume heuristic, not a signature match, and does not apply to every
+NETWORK_TRAFFIC event — see its docstring). The end-to-end test below now
+asserts the real SYSTEM_ALERT detection match, superseding the earlier
+"storage only" version of this test.
 """
 import uuid
 from datetime import datetime, timezone
@@ -284,15 +287,14 @@ async def _wait_until(condition, timeout=10.0, interval=0.1) -> bool:
 
 
 @pytest.mark.asyncio
-async def test_end_to_end_alert_is_stored_and_hashed(running_event_bus):
+async def test_end_to_end_alert_is_stored_hashed_and_detected(running_event_bus):
     """
     Real HTTP request -> real API-key auth -> real rate limiter -> SuricataParser
     -> canonical contract -> real Redis Streams publish -> real consumer -> real
-    Postgres row with a verifying hash, through the unmodified existing pipeline.
-
-    Does not assert a detection match: no rule currently targets SYSTEM_ALERT
-    (see module docstring) - a version of this test claiming detection would
-    misrepresent what this connector guarantees.
+    Postgres row with a verifying hash -> real NetworkIntrusionAlert detection
+    rule (detection/rules.py, added in Phase 13) -> a real InvestigationCase,
+    through the unmodified existing pipeline. Supersedes the earlier version of
+    this test, which predated NetworkIntrusionAlert and asserted storage only.
     """
     marker_host = f"E2E-SURICATA-{uuid.uuid4().hex[:8]}"
     event = _alert_event(host=marker_host, timestamp="2026-09-20T12:00:00.000000+0000")
@@ -320,3 +322,21 @@ async def test_end_to_end_alert_is_stored_and_hashed(running_event_bus):
         from core.integrity import verify_event_integrity
         assert verify_event_integrity(stored) is True
         assert stored.metadata_["signature"] == "ET TROJAN Cobalt Strike Beaconing Detected"
+
+    from models.investigation import EvidenceItem
+
+    async def _evidence_exists_for_event() -> bool:
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(select(EvidenceItem).where(EvidenceItem.event_id == event_id))
+            return result.scalars().first() is not None
+
+    assert await _wait_until(_evidence_exists_for_event), (
+        "a Suricata alert must now trigger NetworkIntrusionAlert and be cited as evidence "
+        "(Phase 13) — this is the real detection engine, not a mock"
+    )
+
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(select(EvidenceItem).where(EvidenceItem.event_id == event_id))
+        evidence = result.scalars().first()
+        assert evidence.evidence_type == "NETWORK_INTRUSION_ALERT"
+        assert "ET TROJAN Cobalt Strike Beaconing Detected" in evidence.reason

@@ -78,6 +78,29 @@ class EventTaxonomyNormalizer:
         # Network / IDS (Suricata EVE connector, Phase 11 connector #2)
         "suricata alert": CanonicalEventType.SYSTEM_ALERT,
         "network flow": CanonicalEventType.NETWORK_TRAFFIC,
+        # Self-referential snake_case entries, matching the existing "auth_failure"/
+        # "process_execution" entries above: CanonicalSecurityEvent._apply_taxonomy
+        # rewrites a normalized event's own event_type to the canonical value's
+        # string (e.g. "SYSTEM_ALERT"), so any rule that re-normalizes a *stored*
+        # event (detection/rules.py does, via taxonomy_normalizer.normalize(event.
+        # event_type, event.raw_log)) needs that exact lowercased value to resolve
+        # back to itself, or it silently falls through to UNKNOWN on every event
+        # read back from the database. Found as a real, confirmed defect while
+        # building Phase 13's NetworkIntrusionAlert/LargeExternalDataTransfer rules:
+        # neither "suricata alert"/"network flow" nor any substring heuristic below
+        # matches "system_alert"/"network_traffic", so both rules matched in the
+        # unit tests I first wrote (canonical event objects, not yet round-tripped
+        # through storage) but silently never fired against a real, ingested,
+        # persisted event until this fix.
+        "system_alert": CanonicalEventType.SYSTEM_ALERT,
+        "network_traffic": CanonicalEventType.NETWORK_TRAFFIC,
+        # "network connection" is the literal event_type string used by the pre-existing
+        # generic-ingest fixture datasets/insider_threat/events.json (and plausibly other
+        # hand-authored/generic-source telemetry) - found while building Phase 13 network
+        # detection rules: without this entry the string fell through to UNKNOWN, so no
+        # NETWORK_TRAFFIC-gated rule could ever see that dataset's own network event. Purely
+        # additive, same as the two entries above.
+        "network connection": CanonicalEventType.NETWORK_TRAFFIC,
     }
 
     # Windows Event ID mappings
