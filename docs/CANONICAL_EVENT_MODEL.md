@@ -6,10 +6,10 @@ This is the one typed, validated, versioned shape that every event source is
 normalized into before it reaches the event bus, storage
 (`models.event.Event`), detection (`detection/engine.py`, `detection/rules.py`)
 or correlation (`correlation/engine.py`). It exists so that a connector
-(Sysmon and Suricata EVE implemented; Splunk HEC not yet — see "Out of
-scope" below) has a single, documented target to normalize into, instead of
-having to reverse-engineer `GenericJSONParser`'s inline logic the way this
-document's predecessor state required.
+(Sysmon, Suricata EVE and Splunk HEC — all three now implemented; see
+"Connectors" below) has a single, documented target to normalize into,
+instead of having to reverse-engineer `GenericJSONParser`'s inline logic the
+way this document's predecessor state required.
 
 Implementation: [`backend/schemas/canonical_event.py`](../backend/schemas/canonical_event.py)
 (`CanonicalSecurityEvent`, a Pydantic v2 model). Tests:
@@ -256,14 +256,14 @@ different concerns and must not be conflated.
   C2) to be marked **blocked** when Phase 13 scenario tests are eventually
   attempted — the contract (and now the Suricata connector) does not create
   a detection capability that doesn't exist.
-- **Two connectors implemented (Sysmon, Suricata EVE), one remains.** The
-  original contract phase was scoped "before implementing connectors";
-  follow-up sessions implemented the Sysmon and Suricata EVE connectors (see
-  **Connectors** below). Splunk HEC (CLAUDE.md roadmap Step 5) is still not
-  implemented — per the user's item 3, Phase 13 scenarios that depend on it
-  remain blocked. The Suricata/network-C2 scenario specifically remains
-  blocked by the missing network/C2 detection rule (D-4/D-5), not by a
-  missing connector anymore.
+- **All three named connectors implemented (Sysmon, Suricata EVE, Splunk
+  HEC).** The original contract phase was scoped "before implementing
+  connectors"; follow-up sessions implemented all three named in CLAUDE.md
+  roadmap Step 5 (see **Connectors** below). Phase 13 scenarios that depend
+  on a connector existing are no longer blocked on that basis. The
+  Suricata/network-C2 scenario specifically remains blocked by the missing
+  network/C2 detection rule (D-4/D-5), not by a missing connector — no
+  connector can substitute for a detection rule that doesn't exist yet.
 - **Ingestion metrics remain process-local** (pre-existing, unrelated to
   this phase — tracked under audit item A-8 and Phase 10/durable-bus work).
 
@@ -458,10 +458,75 @@ correctly (`canonical_event_type: SYSTEM_ALERT`, `severity: HIGH`,
 behavior, not a defect in this connector. Closing that gap is Phase 13
 detection-rule work.
 
+### Splunk HEC (connector #3, implemented)
+
+**What it is.** Accepts Splunk's HTTP Event Collector (HEC) JSON envelope —
+`{"time": <epoch>, "host": ..., "source": ..., "sourcetype": ..., "index":
+..., "event": {...}}` — targeting an inner `event` shaped as a Splunk Common
+Information Model (CIM) Alert, the shape a Splunk "Alert Action" webhook
+forwards for a matched correlation search (see
+`docs/YAROX_ARCHITECTURAL_RECONSTRUCTION.md` "Ingestion Mechanisms" and its
+Connector Transformation Matrix, row "Splunk CIM Alert").
+
+**Endpoint.** `POST /events/ingest/splunk`, same `X-API-Key` header, rate
+limiter and duplicate-suppression approach as the other two connectors.
+Unlike `SysmonIngestRequest`/`SuricataIngestRequest`, the request schema is
+**not** `{"event": {...}}` nested one level down — it's the HEC envelope
+fields at the top level (`time`, `host`, `source`, `sourcetype`, `index`,
+`event`), because that already *is* HEC's real wire shape; adding another
+wrapping layer would not match what a real HEC client sends. Response shape
+is otherwise identical to the other two connectors'.
+
+**Different in kind from Sysmon/Suricata: no closed event-type enum.**
+Sysmon has a fixed set of numeric EventIDs; Suricata EVE has a fixed set of
+`event_type` strings. A Splunk correlation search's `signature` can be any
+text an operator has written — there is no fixed set to enumerate and
+reject against. This connector's job is therefore CIM field-name
+translation only (`backend/plugins/parsers/splunk.py`); classifying the
+resulting `event_type` string reuses the same generic taxonomy heuristics
+(`core.taxonomy.EventTaxonomyNormalizer`'s substring matching) that
+`plugins.parsers.generic.GenericJSONParser` already applies for live/generic
+ingestion — **no new taxonomy mapping was added for this connector**,
+unlike Sysmon (EventID 11) or Suricata (`alert`/`flow`).
+
+**CIM field mapping** (per the architecture doc's Connector Transformation
+Matrix, "Splunk CIM Alert" row):
+
+| CIM field | Canonical field | Notes |
+|---|---|---|
+| `_time` (in `event`), else HEC's own `time` | `timestamp` | Both are Unix epoch, not ISO strings — parsed with `datetime.fromtimestamp()`, not the contract's `isoparse` |
+| `dest`, else `dvc` | `hostname` | Per the transformation matrix: "entity resolution," not an IP field |
+| `dest_ip` (separate from `dest`) | `metadata.destination_ip` **and** `metadata.ip_address` | Disambiguated from `dest`/hostname — same dual-key convention as Sysmon/Suricata |
+| `src` | `metadata.source_ip` | |
+| `user` | `user_name` | `DOMAIN\` prefix stripped, same rule as Sysmon |
+| `signature`, else `sourcetype`, else `"Splunk HEC Event"` | `event_type` (pre-taxonomy) | Feeds the generic heuristic classifier — see above |
+| `severity` (CIM string: informational/low/medium/high/critical) | `severity` | Case-insensitive direct map to YAROX's severities; missing/unrecognized → `INFO` |
+| `app` | `metadata.app` | **Deliberately not** forced into `protocol` or `process_name` despite the architecture doc's literal "app → protocol / process_name" suggestion — CIM's `app` names a reporting application/technology (e.g. `"win:security"`), which is neither reliably a network protocol nor a process name; mapping it into either would fabricate a fact the field doesn't actually state (CLAUDE.md Rule 2/Rule 5). A documented, deliberate narrowing, not an oversight. |
+| `source`/`sourcetype`/`index` (HEC's own routing fields) | `metadata.splunk_source`/`splunk_sourcetype`/`splunk_index` | Kept distinct from this connector's own `source` value (`"splunk"`, the connector identity) to avoid conflating the two |
+
+**Validation.** The envelope must be a JSON object with an `event` key (the
+one thing every HEC payload has by protocol definition), and `event` itself
+must be a JSON object — **raw-text HEC events are explicitly rejected**
+(`422`), not silently accepted with an empty/fabricated metadata dict. HEC
+officially allows raw-text events, but this connector cannot reliably
+extract CIM fields (`dest`, `user`, `signature`, ...) from unstructured
+text without an NLP layer this phase does not add.
+
+**No detection rule currently targets most heuristically-classified
+`event_type`s beyond what the existing rules already cover** — but unlike
+the Suricata connector, this one *can* and does drive a real detection: a
+`signature` like `"Multiple Failed Logon Attempts"` matches the existing
+`fail`+`logon` substring heuristic → `AUTH_FAILURE` → the unmodified
+`FailedLoginBruteForce` rule. Verified both by an end-to-end test (two HEC
+alerts for the same synthetic user, real `InvestigationCase` created) and
+live against the running stack (see Evidence below) — this connector proves
+CIM-mapped events integrate with the *existing* detection surface, not
+just that rows land in Postgres, without needing any new detection rule.
+
 ### How to add another connector
 
-The Sysmon and Suricata EVE connectors are the template. To add Splunk HEC or
-anything else:
+The Sysmon, Suricata EVE and Splunk HEC connectors are the template. To add
+another one:
 
 1. Write a parser module under `backend/plugins/parsers/<name>.py`
    implementing `ParserInterface` (`plugins/parsers/generic.py`) — a
@@ -673,5 +738,63 @@ or claimed to be fixed — the end-to-end test and the live verification both
 explicitly confirm the documented absence of `SYSTEM_ALERT`/`NETWORK_TRAFFIC`
 detection coverage rather than asserting a match that would not occur. Per
 the governing instruction, Phase 13 (detection rules for these types) has
-not been started. Splunk HEC (CLAUDE.md roadmap Step 5, the third named
-connector) remains not implemented.
+not been started.
+
+## Evidence (Splunk HEC connector, follow-up session)
+
+- Files: `backend/plugins/parsers/splunk.py` (new), `backend/schemas/ingest.py`
+  (+`SplunkHECIngestRequest`/`SplunkHECIngestResponse`), `backend/api/ingest.py`
+  (+`POST /events/ingest/splunk`), new test file
+  `backend/tests/test_splunk_connector.py` (23 tests). No changes to
+  `core/taxonomy.py` or `detection/` — see "Splunk HEC" above for why (no
+  closed event-type set; reuses the existing generic heuristic classifier).
+- `docker compose exec backend pytest -v tests/test_splunk_connector.py` →
+  **23 passed**: 12 field-mapping tests (CIM field mapping, `dest`/`dvc`
+  fallback, `dest_ip` disambiguation from `dest`, parametrized CIM severity
+  mapping across all 5 values, missing-severity default, `_time`/`time`
+  priority and fallback, missing-both-timestamps fallback, signature-driven
+  taxonomy classification via the *existing* heuristics, signature/sourcetype
+  fallback chain), 6 validation-failure tests (missing `event` key, raw-string
+  `event` rejected both at the parser level and over HTTP, non-dict envelope,
+  oversized payload, missing API key), 1 duplicate-redelivery test, 1
+  end-to-end test asserting a real detection match (not just storage).
+- `docker compose exec backend pytest -q tests/` → **307 passed** (284 + 23),
+  no regressions.
+- Live, on the running stack (`docker compose restart backend celery_worker`):
+  two real `POST /events/ingest/splunk` calls, both `signature: "Multiple
+  Failed Logon Attempts"` for the same synthetic user, 1 second apart → both
+  `202 {"canonical_event_type": "AUTH_FAILURE", ...}`; a joined Postgres
+  query confirmed a real `InvestigationCase` ("Brute Force", HIGH) with a
+  matching `EvidenceItem` (`evidence_type: AUTHENTICATION_FAILURE`) citing
+  the second event's `event_id` — the same `FailedLoginBruteForce` rule
+  Sysmon's own live verification exercised, now proven reachable from a
+  third, independently-mapped source with zero rule changes. The live
+  verification also (as expected) triggered the real Phase 7 Celery
+  multi-agent investigation pipeline against the synthetic case; all
+  verification rows (events, evidence, attack technique, security
+  relationship, agent executions/reasoning/tool-call rows, and the case
+  itself) were deleted afterward once the in-flight agent executions
+  finished, to avoid deleting rows out from under a running background task.
+
+**Known limitations specific to this connector**: no batch ingestion (one
+HEC envelope per HTTP request); raw-text HEC events are not supported
+(structured CIM `event` objects only); `app` is preserved as-is rather than
+being split into `protocol`/`process_name` as the architecture doc's
+transformation matrix literally suggests (see field-mapping table above for
+the reasoning); classification quality for any signature not already
+covered by the existing generic taxonomy heuristics is whatever
+`EventTaxonomyNormalizer` already provides (i.e. often `UNKNOWN`) — this
+connector adds no new classification intelligence of its own, by design;
+duplicate detection has the same race-window characteristics documented for
+Sysmon (not independently re-verified live here).
+
+**Completion criterion (connector):** the Splunk HEC connector is
+implemented using the existing canonical contract, CIM field mapping is
+justified against `docs/YAROX_ARCHITECTURAL_RECONSTRUCTION.md`'s own
+Connector Transformation Matrix (with one deliberate, documented narrowing),
+field mapping/validation/duplicate/end-to-end behavior is each backed by a
+test, and it has been verified live against the running stack **with a real
+detection match** — a stronger bar than the Suricata connector could meet,
+met here because this source's classification path reuses detection
+coverage that already exists. All three connectors named in CLAUDE.md
+roadmap Step 5 (Sysmon, Suricata EVE, Splunk HEC) are now implemented.

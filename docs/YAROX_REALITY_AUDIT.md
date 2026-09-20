@@ -75,7 +75,7 @@ The "Restoration" column is updated as phases complete. `OPEN` = not yet address
 | E-1 | Event bus | PARTIAL | `InMemoryEventBus` over `asyncio.Queue`; subscriber errors `print`ed and dropped | `core/events.py` | Lost on restart; single process only | Phase 10: Redis Streams | **FIXED (Phase 10)** — `RedisStreamEventBus` (consumer group, ack-after-success, `xautoclaim` crash recovery) is the default (`EVENT_BUS=redis`); `InMemoryEventBus` kept for single-process/test use. Verified live: a real container stop/publish/restart cycle proved no event loss. |
 | E-2 | Event integrity hash | MISSING | No hash column on `events`; no SHA-256 over payload anywhere | `models/event.py` | Chain-of-custody claim is false | `payload_sha256` column + canonical JSON hashing + migration | **FIXED (Phase 2)** — `events.payload_sha256`, `core/integrity.py`, `GET /events/{id}/integrity`; legacy rows NULL |
 | E-3 | Canonical event model | PARTIAL | `GenericJSONParser` returns ORM dict; `CanonicalEventType` taxonomy exists; no `CanonicalSecurityEvent` Pydantic model | `plugins/parsers/generic.py`, `core/taxonomy.py` | Connectors cannot target a stable contract | Phase 11 | **FIXED (Phase 11)** — `schemas/canonical_event.py` `CanonicalSecurityEvent`, versioned (`schema_version: Literal["1.0"]`), wired into both live ingest and replay via `GenericJSONParser`; see `docs/CANONICAL_EVENT_MODEL.md` |
-| E-4 | Connectors (Sysmon, Suricata, Splunk HEC) | PARTIAL | Sysmon and Suricata EVE implemented (`plugins/parsers/sysmon.py`/`suricata.py`, `POST /events/ingest/sysmon`/`suricata`); Splunk HEC not started | `backend/plugins/parsers/sysmon.py`, `backend/plugins/parsers/suricata.py`, `backend/api/ingest.py` | Spec claims connector ecosystem | Phase 11 follow-up | **PARTIAL (Phase 11 connectors #1, #2)** — Sysmon and Suricata EVE connectors implemented, tested (18 + 19 tests), and live-verified end to end; Sysmon includes a real detection match, Suricata EVE confirms (as documented, not a bug) that `SYSTEM_ALERT`/`NETWORK_TRAFFIC` events currently have no detection rule to match against. See `docs/CANONICAL_EVENT_MODEL.md` "Connectors". Splunk HEC remains OPEN. Phase 13 scenarios needing network/C2 detection remain blocked by D-4/D-5, not by the missing connector anymore. |
+| E-4 | Connectors (Sysmon, Suricata, Splunk HEC) | FIXED | All three implemented (`plugins/parsers/sysmon.py`/`suricata.py`/`splunk.py`, `POST /events/ingest/sysmon`/`suricata`/`splunk`) | `backend/plugins/parsers/{sysmon,suricata,splunk}.py`, `backend/api/ingest.py` | Spec claims connector ecosystem | Phase 11 follow-up | **FIXED (Phase 11 connectors #1, #2, #3)** — Sysmon, Suricata EVE and Splunk HEC connectors all implemented, tested (18 + 19 + 23 tests), and live-verified end to end. Sysmon and Splunk HEC each include a real detection match (Splunk HEC's via the *existing* `FailedLoginBruteForce` rule, no new detection code); Suricata EVE confirms (as documented, not a bug) that `SYSTEM_ALERT`/`NETWORK_TRAFFIC` events currently have no detection rule to match against. See `docs/CANONICAL_EVENT_MODEL.md` "Connectors". All three connectors named in CLAUDE.md roadmap Step 5 are done; Phase 13 scenarios needing network/C2 detection remain blocked by D-4/D-5, not by any missing connector. |
 | D-1 | Detection rules (4) | PARTIAL | Rules match; `DetectionEngine.process_event` returns on **first** matching rule; `SuspiciousProcessExecution` matches any `cmd.exe`/`powershell` command line | `detection/engine.py`, `detection/rules.py` | Multi-rule events lose detections; noisy | Evaluate all rules; tighten indicators | OPEN — first-match/noise behavior unchanged. Separately, a real metadata-read defect (rules/entity-extraction reading `event.raw_log['metadata']` instead of the real `event.metadata_` column, silently missing any caller that doesn't duplicate metadata into raw_log) was found and fixed during Sysmon connector work; see `docs/CANONICAL_EVENT_MODEL.md` "Connectors". |
 | D-2 | Detection state | PARTIAL | Brute-force and lateral-movement counters in process memory (`defaultdict`) | `detection/rules.py` `FailedLoginBruteForce.failed_logins`, `LateralMovement.user_hosts` | Two instances disagree; restart resets | Phase 10: Redis-backed windows | **FIXED (Phase 10)** — `detection/state.py` `DetectionStateStore`, Redis sorted-set sliding windows shared by every process, window-expiring TTL. Both rules now `async` and read/write the shared store. |
 | D-3 | Sigma engine | PARTIAL | One YAML rule; only `contains`/`exact` selection; used only to bump importance score | `rules/sigma/engine.py` | Not a Sigma engine | Mark as partial | OPEN |
@@ -777,5 +777,55 @@ mapping/validation/duplicate/end-to-end behavior each backed by a test;
 verified live against the running stack with a real stored, hashed row.
 Detection coverage for `SYSTEM_ALERT`/`NETWORK_TRAFFIC` (D-4) is explicitly
 out of scope and remains open — Phase 13 territory, not connector work.
-Splunk HEC (the third named connector, CLAUDE.md roadmap Step 5) remains
-unimplemented.
+
+### E-4 follow-up — Splunk HEC connector (Phase 11 connector #3) (2026-09-20)
+
+Third and final connector named in CLAUDE.md roadmap Step 5 — see
+`docs/CANONICAL_EVENT_MODEL.md` "Connectors" → "Splunk HEC" for the full
+CIM field-mapping table and rationale, not duplicated here. New:
+`backend/plugins/parsers/splunk.py` (`SplunkHECParser`, CIM field
+translation only — no new taxonomy mapping, unlike Sysmon/Suricata, since
+Splunk HEC has no closed event-type set), `POST /events/ingest/splunk`
+(`backend/api/ingest.py`), request/response schemas
+(`backend/schemas/ingest.py`), and `backend/tests/test_splunk_connector.py`
+(23 tests). No changes to `core/taxonomy.py` or `detection/`.
+
+**Tests**: `docker compose exec backend pytest -v tests/test_splunk_connector.py`
+→ **23 passed**. Full suite: `docker compose exec backend pytest -q tests/`
+→ **307 passed** (284 baseline + 23), no regressions.
+
+**Live verification**: two real `POST /events/ingest/splunk` alerts
+(`signature: "Multiple Failed Logon Attempts"`, same synthetic user, 1
+second apart) → both `202 {"canonical_event_type": "AUTH_FAILURE", ...}`;
+direct Postgres query confirmed a real `InvestigationCase` ("Brute Force",
+HIGH) with a matching `EvidenceItem` citing the second event — the
+*existing* `FailedLoginBruteForce` rule fired with zero detection-code
+changes, proving CIM field mapping integrates with real detection, not just
+storage. This is a stronger live-verification result than the Suricata
+connector could produce, because Splunk HEC's classification path (generic
+taxonomy heuristics) reuses detection coverage that already exists, unlike
+`SYSTEM_ALERT`/`NETWORK_TRAFFIC`. The live verification also correctly
+triggered the real Phase 7 Celery multi-agent investigation pipeline
+against the synthetic case (4 `agent_executions` rows); all verification
+rows (events, evidence, attack technique, security relationship, agent
+executions/reasoning/tool-call rows, the case itself) were deleted
+afterward, after waiting for the in-flight agent executions to finish
+rather than deleting out from under a running background task — consistent
+with the standing "do not purge dev data" constraint (this was data created
+and removed within the same verification step, not pre-existing data).
+
+**Known limitations**: no batch ingestion; raw-text HEC events rejected
+(CIM-structured `event` objects only); `app` deliberately not split into
+`protocol`/`process_name` despite the architecture doc's literal
+suggestion (documented reasoning in `CANONICAL_EVENT_MODEL.md`);
+classification quality is bounded by the existing generic taxonomy
+heuristics — this connector adds no new classification intelligence.
+
+**Completion criterion met (connector only)**: implemented on the existing
+canonical contract; CIM field mapping justified against
+`docs/YAROX_ARCHITECTURAL_RECONSTRUCTION.md`'s own Connector Transformation
+Matrix; field mapping/validation/duplicate/end-to-end behavior each backed
+by a test; verified live against the running stack **with a real detection
+match** (`FailedLoginBruteForce`, unmodified). **All three connectors named
+in CLAUDE.md roadmap Step 5 (Sysmon, Suricata EVE, Splunk HEC) are now
+implemented** — E-4 moves from PARTIAL to FIXED.

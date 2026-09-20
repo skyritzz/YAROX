@@ -113,3 +113,41 @@ class SuricataIngestResponse(BaseModel):
     event_type: str
     canonical_event_type: str
     ingest_mode: str = "LIVE"
+
+
+class SplunkHECIngestRequest(BaseModel):
+    """
+    One Splunk HTTP Event Collector (HEC) envelope:
+    {'time': <epoch>, 'host': ..., 'source': ..., 'sourcetype': ..., 'index': ...,
+    'event': {...}}. Deliberately not a field-by-field schema, same rationale
+    as SysmonIngestRequest/SuricataIngestRequest: plugins.parsers.splunk.
+    SplunkHECParser is the single source of field validation, including the
+    requirement that 'event' be a JSON object (CIM-style fields), not raw
+    text. Modeled at the top level (not nested under an 'event' key like the
+    Sysmon/Suricata request schemas) because HEC's own wire format already is
+    the envelope - wrapping it again would not match what a real HEC client sends.
+    """
+    time: Any = Field(None, description="HEC transport-level epoch timestamp (seconds, optionally fractional)")
+    host: Optional[str] = Field(None, max_length=256, description="Splunk-side host field (the forwarder/indexer's own notion of host, not necessarily the alert's entity - see 'event.dest')")
+    source: Optional[str] = Field(None, max_length=256)
+    sourcetype: Optional[str] = Field(None, max_length=256)
+    index: Optional[str] = Field(None, max_length=256)
+    event: Dict[str, Any] = Field(..., description="The CIM-shaped alert payload, e.g. {'signature': '...', 'dest': '...', 'user': '...', 'severity': 'high', ...}")
+
+    @field_validator("event")
+    @classmethod
+    def validate_payload_size(cls, v: Dict[str, Any]) -> Dict[str, Any]:
+        serialized = json.dumps(v)
+        if len(serialized.encode("utf-8")) > MAX_PAYLOAD_SIZE_BYTES:
+            raise ValueError(f"Payload size ({len(serialized.encode('utf-8'))} bytes) exceeds maximum allowable limit of {MAX_PAYLOAD_SIZE_BYTES} bytes (64 KB).")
+        return v
+
+
+class SplunkHECIngestResponse(BaseModel):
+    status: str  # "accepted" | "duplicate"
+    event_id: str
+    timestamp: str
+    hostname: str
+    event_type: str
+    canonical_event_type: str
+    ingest_mode: str = "LIVE"

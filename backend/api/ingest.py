@@ -21,10 +21,13 @@ from schemas.ingest import (
     SysmonIngestResponse,
     SuricataIngestRequest,
     SuricataIngestResponse,
+    SplunkHECIngestRequest,
+    SplunkHECIngestResponse,
 )
 from plugins.parsers.generic import generic_parser
 from plugins.parsers.sysmon import sysmon_parser
 from plugins.parsers.suricata import suricata_parser
+from plugins.parsers.splunk import splunk_hec_parser
 
 router = APIRouter()
 
@@ -304,6 +307,92 @@ async def ingest_suricata_event(
         )
 
     return SuricataIngestResponse(
+        status="accepted",
+        event_id=str(normalized_dict["id"]),
+        timestamp=normalized_dict["timestamp"].isoformat(),
+        hostname=normalized_dict["hostname"],
+        event_type=normalized_dict["event_type"],
+        canonical_event_type=canonical_event.canonical_event_type.value,
+        ingest_mode="LIVE",
+    )
+
+
+@router.post("/splunk", response_model=SplunkHECIngestResponse, status_code=status.HTTP_202_ACCEPTED)
+async def ingest_splunk_hec_event(
+    request: SplunkHECIngestRequest,
+    raw_request: Request,
+    api_key: str = Depends(verify_ingestion_api_key),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Splunk HEC connector (Phase 11, connector #3): accepts one Splunk HTTP
+    Event Collector envelope carrying a CIM-style Alert event, normalizes it
+    through plugins.parsers.splunk.SplunkHECParser into the same canonical
+    contract every other source uses, and publishes it on the same
+    'EventNormalized' topic — reusing live ingestion's auth, rate limiting,
+    durable event bus, storage and detection pipeline unchanged.
+
+    Unlike the Sysmon/Suricata connectors, this one has no closed set of
+    event types to enumerate — a HEC alert's 'signature' can be any
+    correlation-search name an operator has written — so classification goes
+    through the same generic taxonomy heuristics live ingestion already
+    uses. What is rejected with 422: a payload with no 'event' key, or an
+    'event' that isn't a JSON object (raw-text HEC events are not supported
+    by this connector — see plugins/parsers/splunk.py for why).
+    """
+    metrics_tracker.record_received()
+
+    client_ip = raw_request.client.host if raw_request.client else "default_shipper"
+    is_allowed, retry_after = await ingestion_rate_limiter.check_rate_limit(f"{client_ip}:{api_key[:8]}")
+    if not is_allowed:
+        metrics_tracker.record_rate_limited()
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Telemetry ingestion rate limit exceeded (Max {settings.RATE_LIMIT_INGEST_PER_MINUTE} events/min). Try again in {retry_after} seconds.",
+            headers={"Retry-After": str(retry_after)}
+        )
+
+    try:
+        canonical_event = splunk_hec_parser.to_canonical(request.model_dump())
+    except CanonicalEventValidationError as e:
+        metrics_tracker.record_rejected()
+        print(f"[INGEST ERROR] Splunk HEC event rejected: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Failed to normalize Splunk HEC event: {str(e)}"
+        )
+
+    normalized_dict = canonical_event.to_orm_kwargs()
+
+    # Best-effort duplicate suppression, same rationale as the Sysmon/Suricata
+    # endpoints: a redelivered identical HEC event (e.g. a forwarder retrying
+    # after a timeout) is acknowledged idempotently instead of being stored twice.
+    content_hash = compute_event_hash(normalized_dict)
+    existing_id = await find_duplicate_event_id(db, content_hash)
+    if existing_id is not None:
+        metrics_tracker.record_accepted()
+        return SplunkHECIngestResponse(
+            status="duplicate",
+            event_id=str(existing_id),
+            timestamp=normalized_dict["timestamp"].isoformat(),
+            hostname=normalized_dict["hostname"],
+            event_type=normalized_dict["event_type"],
+            canonical_event_type=canonical_event.canonical_event_type.value,
+            ingest_mode="LIVE",
+        )
+
+    try:
+        await event_bus.publish("EventNormalized", normalized_dict)
+        metrics_tracker.record_accepted()
+    except Exception as e:
+        metrics_tracker.record_rejected()
+        print(f"[INGEST ERROR] Failed to publish Splunk HEC event: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Failed to process Splunk HEC event: {str(e)}"
+        )
+
+    return SplunkHECIngestResponse(
         status="accepted",
         event_id=str(normalized_dict["id"]),
         timestamp=normalized_dict["timestamp"].isoformat(),
