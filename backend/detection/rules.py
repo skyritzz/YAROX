@@ -107,7 +107,76 @@ class PrivilegeEscalation(BaseDetectionRule):
             "evidence_type": "PRIVILEGE_CHANGE"
         }
 
+_ENCODED_COMMAND_CANONICAL = "-encodedcommand"
+
+# .NET/PowerShell fileless download-and-execute "cradle": Invoke-Expression (its
+# 'iex' alias) piping straight into a downloaded payload, or an explicit web-client
+# download call, executed from process-creation telemetry. MITRE T1059.001 commonly
+# cites exactly this pattern. Deliberately narrow, specific method/cmdlet names, not
+# generic words — legitimate command lines essentially never contain any of these.
+_DOWNLOAD_CRADLE_PATTERNS = (
+    "invoke-expression", "iex(", "iex ",
+    "downloadstring(", "downloadfile(", "downloaddata(",
+)
+
+
+def _has_encoded_command_flag(command_line_lower: str) -> bool:
+    """
+    True if a whitespace-delimited token in the command line is an unambiguous
+    abbreviation of PowerShell's '-EncodedCommand' host flag (powershell.exe
+    accepts any unambiguous prefix of its own parameters; '-enc' is the
+    conventional minimum abbreviation seen in real encoded/obfuscated
+    PowerShell invocations — see tests/test_sysmon_connector.py's own
+    '-enc SQBFAFgA' fixture). Token-precise, not a bare substring search: it
+    does not collide with an unrelated flag like some other tool's own
+    '-Encoding' parameter ('-encodedcommand'.startswith('-encoding') is
+    False — they diverge at the 7th character).
+    """
+    for token in command_line_lower.replace('"', ' ').split():
+        if token.startswith('-') and len(token) >= 4 and _ENCODED_COMMAND_CANONICAL.startswith(token):
+            return True
+    return False
+
+
 class SuspiciousProcessExecution(BaseDetectionRule):
+    """
+    Phase 15 / audit item D-1. Previously matched on bare substrings —
+    ``'powershell' in raw or 'cmd.exe' in raw`` — which flagged literally any
+    invocation of either interpreter regardless of arguments. Confirmed live
+    (not assumed) to false-positive on ordinary, benign command lines with no
+    suspicious content at all: ``cmd.exe /c echo build succeeded``,
+    ``powershell.exe -File C:\\Scripts\\Get-DiskSpace.ps1``, a plain CI build
+    step invoking ``cmd.exe`` — all matched under the old logic. In any
+    environment where PowerShell/cmd.exe are used for routine administration,
+    automation, or CI (i.e. almost all of them), this made the rule fire on
+    a large fraction of ordinary activity — not real detection coverage, a
+    100%-recall/100%-false-positive-rate rule is not distinguishing anything.
+
+    Now matches only two specific, narrow, well-documented indicators, each
+    still checked against the same free-text ``command_line`` (this
+    connector-agnostic approach is unchanged; only which patterns count as
+    "suspicious" changed):
+
+    1. An encoded/obfuscated command execution flag (see
+       ``_has_encoded_command_flag`` — unchanged in spirit from before, just
+       token-precise instead of a raw substring search).
+    2. A PowerShell fileless download-and-execute "cradle" (see
+       ``_DOWNLOAD_CRADLE_PATTERNS``) — a detection capability that did not
+       exist before this fix.
+
+    **Known, deliberate coverage tradeoff** (documented per the governing
+    instruction, not silently accepted): a plain, non-obfuscated malicious
+    PowerShell/cmd invocation with no special flags — e.g. the actual
+    malicious logic lives entirely inside a script file referenced via
+    ``-File`` rather than appearing on the command line itself — is no
+    longer flagged by this rule alone. This was never reliable coverage:
+    the old rule caught that case only by also catching every legitimate
+    script invocation, which is not a distinguishing signal. Closing that
+    gap for real would need parent-process lineage, script-block logging,
+    or file-content inspection, none of which this system currently
+    ingests — out of scope for a keyword-matching rule.
+    """
+
     async def match(self, event: Event) -> bool:
         c_type = taxonomy_normalizer.normalize(event.event_type, event.raw_log)
         evt_type = event.event_type.lower()
@@ -115,7 +184,7 @@ class SuspiciousProcessExecution(BaseDetectionRule):
             raw_dict = event.raw_log if isinstance(event.raw_log, dict) else {}
             metadata = _event_metadata(event)
             raw = str(metadata.get('command_line', raw_dict.get('command_line', ''))).lower()
-            if 'powershell' in raw or 'cmd.exe' in raw or '-enc' in raw or 'encodedcommand' in raw:
+            if _has_encoded_command_flag(raw) or any(p in raw for p in _DOWNLOAD_CRADLE_PATTERNS):
                 return True
         return False
 
@@ -123,8 +192,15 @@ class SuspiciousProcessExecution(BaseDetectionRule):
         raw_dict = event.raw_log if isinstance(event.raw_log, dict) else {}
         metadata = _event_metadata(event)
         cmdline = metadata.get('command_line') or raw_dict.get('command_line', 'Unknown')
+        cmdline_lower = str(cmdline).lower()
+        if _has_encoded_command_flag(cmdline_lower):
+            indicator = "an encoded/obfuscated command execution flag (-EncodedCommand)"
+        elif any(p in cmdline_lower for p in _DOWNLOAD_CRADLE_PATTERNS):
+            indicator = "a fileless download-and-execute pattern (Invoke-Expression / web client download)"
+        else:
+            indicator = "a suspicious command-line pattern"  # defensive fallback; match() guarantees one of the above
         return {
-            "description": f"Suspicious command line execution detected: {cmdline}",
+            "description": f"Suspicious command line execution detected ({indicator}): {cmdline}",
             "severity": Severity.HIGH,
             "mitre_technique_id": "T1059",
             "mitre_technique_name": "Command and Scripting Interpreter",

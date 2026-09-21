@@ -76,11 +76,11 @@ The "Restoration" column is updated as phases complete. `OPEN` = not yet address
 | E-2 | Event integrity hash | MISSING | No hash column on `events`; no SHA-256 over payload anywhere | `models/event.py` | Chain-of-custody claim is false | `payload_sha256` column + canonical JSON hashing + migration | **FIXED (Phase 2)** — `events.payload_sha256`, `core/integrity.py`, `GET /events/{id}/integrity`; legacy rows NULL |
 | E-3 | Canonical event model | PARTIAL | `GenericJSONParser` returns ORM dict; `CanonicalEventType` taxonomy exists; no `CanonicalSecurityEvent` Pydantic model | `plugins/parsers/generic.py`, `core/taxonomy.py` | Connectors cannot target a stable contract | Phase 11 | **FIXED (Phase 11)** — `schemas/canonical_event.py` `CanonicalSecurityEvent`, versioned (`schema_version: Literal["1.0"]`), wired into both live ingest and replay via `GenericJSONParser`; see `docs/CANONICAL_EVENT_MODEL.md` |
 | E-4 | Connectors (Sysmon, Suricata, Splunk HEC) | FIXED | All three implemented (`plugins/parsers/sysmon.py`/`suricata.py`/`splunk.py`, `POST /events/ingest/sysmon`/`suricata`/`splunk`) | `backend/plugins/parsers/{sysmon,suricata,splunk}.py`, `backend/api/ingest.py` | Spec claims connector ecosystem | Phase 11 follow-up | **FIXED (Phase 11 connectors #1, #2, #3)** — Sysmon, Suricata EVE and Splunk HEC connectors all implemented, tested (18 + 19 + 23 tests), and live-verified end to end. Sysmon and Splunk HEC each include a real detection match (Splunk HEC's via the *existing* `FailedLoginBruteForce` rule, no new detection code); Suricata EVE confirms (as documented, not a bug) that `SYSTEM_ALERT`/`NETWORK_TRAFFIC` events currently have no detection rule to match against. See `docs/CANONICAL_EVENT_MODEL.md` "Connectors". All three connectors named in CLAUDE.md roadmap Step 5 are done; Phase 13 scenarios needing network/C2 detection remain blocked by D-4/D-5, not by any missing connector. |
-| D-1 | Detection rules (4→7) | PARTIAL | `DetectionEngine.process_event` no longer returns on first match — evaluates every rule and records evidence/technique for each one that matches; `SuspiciousProcessExecution`'s broad `cmd.exe`/`powershell` keyword match is unchanged | `detection/engine.py`, `detection/rules.py` | Multi-rule events lose detections; noisy | Evaluate all rules; tighten indicators | **FIXED (Phase 13, first-match bug)** — `process_event` now loops over all 7 rules and records every match (regression test: `test_phase13_detection.py::test_single_event_matching_two_rules_records_evidence_for_both`, confirmed to fail without the fix via `git stash`). **Noise/indicator-tightening remains OPEN** — `SuspiciousProcessExecution`'s broad keyword match was not narrowed, out of scope for this fix. Separately, a real metadata-read defect (rules/entity-extraction reading `event.raw_log['metadata']` instead of the real `event.metadata_` column) was found and fixed during Sysmon connector work; see `docs/CANONICAL_EVENT_MODEL.md` "Connectors". |
+| D-1 | Detection rules (4→7) | FIXED | `DetectionEngine.process_event` evaluates every rule and records evidence/technique for each match; `SuspiciousProcessExecution` now matches on two specific, narrow, well-documented indicators (encoded/obfuscated command flag, fileless download-and-execute cradle) instead of bare `cmd.exe`/`powershell` substrings, confirmed live to no longer false-positive on ordinary command lines | `detection/engine.py`, `detection/rules.py` | Multi-rule events lose detections; noisy | Evaluate all rules; tighten indicators | **FIXED (Phase 13 first-match bug; Phase 15 noise/indicator-tightening)** — `process_event` loops over all 7 rules (regression test confirmed to fail without the fix via `git stash`, Phase 13). `SuspiciousProcessExecution`'s bare-substring match replaced with token-precise encoded-command detection plus a new download-cradle indicator; confirmed live (real `POST /events/ingest/sysmon`) that a benign `cmd.exe /c echo build succeeded` event now produces zero evidence, and a real download-cradle command produces a real case with evidence naming the specific indicator. Documented, deliberate coverage tradeoff: a plain unobfuscated malicious invocation with no flags on the command line is no longer caught by this rule alone (was never reliable coverage — see `docs/PHASE_15_DETECTION_QUALITY.md`). Separately, a real metadata-read defect (rules/entity-extraction reading `event.raw_log['metadata']` instead of the real `event.metadata_` column) was found and fixed during Sysmon connector work; see `docs/CANONICAL_EVENT_MODEL.md` "Connectors". |
 | D-2 | Detection state | PARTIAL | Brute-force and lateral-movement counters in process memory (`defaultdict`) | `detection/rules.py` `FailedLoginBruteForce.failed_logins`, `LateralMovement.user_hosts` | Two instances disagree; restart resets | Phase 10: Redis-backed windows | **FIXED (Phase 10)** — `detection/state.py` `DetectionStateStore`, Redis sorted-set sliding windows shared by every process, window-expiring TTL. Both rules now `async` and read/write the shared store. |
-| D-3 | Sigma engine | PARTIAL | One YAML rule; only `contains`/`exact` selection; used only to bump importance score | `rules/sigma/engine.py` | Not a Sigma engine | Mark as partial | OPEN — deliberately untouched in Phase 13; the new rules are native Python, not Sigma YAML, and no concrete case required expanding the Sigma engine itself (see `docs/PHASE_13_DETECTION_FOUNDATIONS.md`). |
+| D-3 | Sigma engine | PARTIAL | One YAML rule; only `contains`/`exact` selection, single flat `selection` block, no `condition` expression logic, no field-name mapping to YAROX's canonical schema | `rules/sigma/engine.py` | Not a Sigma engine; cannot consume real/unmodified Sigma rules (e.g. SigmaHQ) | Mark as partial | OPEN — deliberately untouched in Phase 13 and Phase 15 (re-assessed with concrete evidence in Phase 15, still not implemented). A scoped plan (condition-expression evaluator, expanded modifier set, logsource field-mapping layer) is proposed in `docs/PHASE_15_DETECTION_QUALITY.md` §7. |
 | D-4 | Network/C2 detection | PARTIAL | `NetworkIntrusionAlert` now fires on any SYSTEM_ALERT event (currently Suricata EVE `alert` records only) — the IDS-alert half of this gap. `NETWORK_TRAFFIC`/flow-only telemetry still has no C2-inference rule; `LargeExternalDataTransfer` is a volume-only heuristic, not a C2 detector — no rule claims to identify C2 from generic flow data alone (explicit governing constraint) | `detection/rules.py` (`NetworkIntrusionAlert`, `LargeExternalDataTransfer`) | Scenario 3 (Suricata/network C2) still likely blocked pending Phase 13 scenario work — IDS-alert detection now exists, but no rule confirms C2 specifically from flow data | Add a real C2/beaconing heuristic if a defensible one can be built without threat-intel fabrication | **PARTIAL (Phase 13)** — see `docs/PHASE_13_DETECTION_FOUNDATIONS.md` for full rationale, rule design and live verification. |
-| D-5 | Insider-threat detection coverage | PARTIAL | `DataStagingViaArchiveUtility` (archive-utility invocation) and `LargeExternalDataTransfer` (volume-based egress heuristic) now both fire. Replayed live against the *actual* `datasets/insider_threat/events.json` fixture this finding cites: both its 7z.exe archiving event and its 15 MB transfer event now produce real cases (`tests/test_phase13_detection.py::test_real_insider_threat_dataset_now_produces_detections`). The dataset's two "File Access" events (routine + "unusual access pattern" flagged) still produce no detection — no rule covers sensitive-file-access baselining | `detection/rules.py` (`DataStagingViaArchiveUtility`, `LargeExternalDataTransfer`) | A shipped dataset that the product could not detect at all is now partially detectable | File-access/sensitivity baselining remains open — would require a definition of "sensitive"/"unusual" this system does not have without fabricating a classifier | **PARTIAL (Phase 13)** — see `docs/PHASE_13_DETECTION_FOUNDATIONS.md`. |
+| D-5 | Insider-threat detection coverage | PARTIAL | `DataStagingViaArchiveUtility` (archive-utility invocation) and `LargeExternalDataTransfer` (volume-based egress heuristic) now both fire. Replayed live against the *actual* `datasets/insider_threat/events.json` fixture this finding cites: both its 7z.exe archiving event and its 15 MB transfer event now produce real cases (`tests/test_phase13_detection.py::test_real_insider_threat_dataset_now_produces_detections`). The dataset's two "File Access" events (routine + "unusual access pattern" flagged) still produce no detection — no rule covers sensitive-file-access baselining | `detection/rules.py` (`DataStagingViaArchiveUtility`, `LargeExternalDataTransfer`) | A shipped dataset that the product could not detect at all is now partially detectable | File-access/sensitivity baselining remains open — would require a definition of "sensitive"/"unusual" this system does not have without fabricating a classifier | **PARTIAL (Phase 13)**, re-assessed in Phase 15: the gap is telemetry, not just code (Sysmon EventID 11 only carries `process_name`/`target_filename`, create-only, no historical access record to baseline from — the dataset's own "unusual access pattern" label is pre-baked ground truth, not raw signal). A narrower volume/distinct-file-count heuristic (reusing `detection/state.py`'s existing windowed-counter infrastructure) is buildable but is explicitly not the same thing as baselining. See `docs/PHASE_15_DETECTION_QUALITY.md` §8. |
 | W-3 | Worker lazy imports | BROKEN | On the live worker, `from agents.orchestrator import …` inside the task body raised `ModuleNotFoundError: No module named 'agents'` in every forked child (backend packages are namespace packages; eager/in-process execution worked, so tests passed) | `workers/tasks/investigation_tasks.py` | Every worker investigation failed after 3 retries | Import at module scope (parent imports at startup, children inherit) + explicit `sys.path` in `workers/celery_app.py` | **FIXED (Phase 7)** |
 | DB-2 | Cross-loop clients in workers | BROKEN | Agents used the module-level SQLAlchemy engine and the global Qdrant client, both bound to the loop that created them; the worker runs `asyncio.run` per task, so the second task failed ("attached to a different loop" / "bound to a different event loop") | `agents/orchestrator.py`, `memory/vector_repository.py` | Worker investigations fail from the second task onward | Session factory passed into the orchestrator (task uses its NullPool engine); Qdrant client created per event loop | **FIXED (Phase 7)** |
 | C-1 | Correlation | PARTIAL | Matches `user_name` OR `hostname` within 24h of `updated_at` (wall clock), OPEN/ANALYZING only; no IP | `correlation/engine.py` `find_related_case` | Events arriving after review open duplicate cases; no network correlation | Add IP; define review-state merge policy | OPEN |
@@ -976,3 +976,86 @@ complete merely because the pytest suite (run against the isolated test
 database) passed. No scenario claims C2 identification, confirmed
 malicious intent, or enterprise readiness beyond what its underlying,
 already-hedged detection rules assert.
+
+### Phase 15 — Detection quality & false-positive reduction (D-1) (2026-09-22)
+
+Full account in `docs/PHASE_15_DETECTION_QUALITY.md` — summarized here.
+
+**Confirmed, not assumed:** `SuspiciousProcessExecution`'s bare
+`'powershell' in raw or 'cmd.exe' in raw` substring match was run directly
+against three constructed benign command lines (`cmd.exe /c echo build
+succeeded`, `powershell.exe -File ...Get-DiskSpace.ps1`, a plain CI build
+step) — all three matched. In any environment where these interpreters are
+used for routine work (nearly all of them), this is not real detection
+coverage; it is noise with a security label on it.
+
+**Fix:** `backend/detection/rules.py` — `SuspiciousProcessExecution` now
+matches only two narrow, well-documented indicators: a token-precise
+`-EncodedCommand` abbreviation check (not a substring search — doesn't
+collide with an unrelated tool's own `-Encoding` flag), and a new
+fileless download-and-execute "cradle" pattern (`Invoke-Expression`/`iex`,
+`DownloadString`/`DownloadFile`/`DownloadData`) — a genuinely new detection
+capability, not previously covered. No other rule, `detection/engine.py`,
+`core/taxonomy.py`, or correlation/dedup logic was touched. **Documented
+tradeoff, not silently accepted:** a plain, unobfuscated malicious
+invocation with no flags on the command line is no longer caught by this
+rule alone — judged acceptable since the old rule only "caught" that case
+by also flagging every legitimate script invocation using the same
+interpreter, which was never real distinguishing signal.
+
+**Tests:** 25 new (`tests/test_phase15_detection_quality.py`) — negatives
+(the 3 confirmed false positives plus more), positives preserved (the exact
+Sysmon connector e2e fixture, all 7 unambiguous `-enc` abbreviation
+prefixes, and Phase 13's own D-1 multi-rule-overlap regression fixture,
+confirmed to still work without requiring an interpreter process name),
+positives new (3 download-cradle variants), explainability (2), real-DB
+integration (3, proving zero cases for the benign fixtures and a real
+traceable case for the cradle pattern through the actual
+`detection_engine.process_event` pipeline). Regression-proven via `git
+stash`: the test module fails to even import against the pre-fix code.
+
+**A real testing-infrastructure bug found and fixed, unrelated to detection
+logic:** the first version of these tests called `asyncio.run()` from
+plain sync test functions, which corrupted `conftest.py`'s session-scoped
+event loop and caused **87 unrelated tests to fail** ("coroutine was never
+awaited") on the next full-suite run. Fixed by making those tests properly
+`@pytest.mark.asyncio async def`, matching the rest of the codebase's
+convention — confirmed the full suite returned to 0 failures afterward.
+
+**Phase 14 regression check:** all three real-stack scenarios (plus the
+investigation-timeout test) re-run against the revised engine and still
+pass — Scenario A (Suricata alert, unrelated rule, confirms no cross-rule
+interference), Scenario B (archive-and-transfer, still correlates into one
+case), Scenario C (negative control, confirmed in the non-LLM run).
+`docker compose exec backend pytest -v tests/test_scenario_orchestration.py -m "llm"`
+→ **3 passed** in 386.49s.
+
+**Full suite:** `-m "not llm"` → **364 passed** (339 + 25, confirming the
+event-loop bug is genuinely fixed — 0 failures, not 87). All markers →
+**367 passed** (342 + 25), zero regressions.
+
+**Live verification** (real `POST /events/ingest/sysmon` against the
+running dev stack, not the isolated test DB): a real benign `cmd.exe`
+event → zero `EvidenceItem` rows, confirmed by direct SQL. A real download-
+cradle event → a real `InvestigationCase` with evidence naming the exact
+indicator that fired and quoting the real command line. Verification rows
+deleted only after confirming (by polling, not assuming) the real
+Celery-dispatched investigation reached a terminal state.
+
+**D-3/D-5 (Step 5): assessed with concrete evidence, neither implemented.**
+D-3's engine cannot consume real/unmodified Sigma content (no condition-
+expression logic, minimal modifier set, no field-name mapping to YAROX's
+schema) — a scoped plan is proposed. D-5's gap is telemetry, not code
+(Sysmon EventID 11 is create-only with no historical access record to
+baseline from; the insider-threat dataset's "unusual access" label is
+pre-baked ground truth, not raw signal a baseline could be computed from).
+D-3 recommended as the better next investment if one must be chosen — its
+prerequisites are within this codebase's control, unlike D-5's.
+
+**Completion criterion met**: the confirmed false-positive source is fixed
+with a minimal, scoped, documented change; the coverage tradeoff is
+surfaced, not hidden; every confirmed false positive and preserved/new
+legitimate positive has a regression test proven to genuinely depend on
+the fix; all Phase 14 scenarios still pass unmodified; the full suite has
+zero regressions; live verification confirms both the fix and the new
+capability against the real running stack.
