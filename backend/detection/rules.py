@@ -478,3 +478,89 @@ class LargeExternalDataTransfer(BaseDetectionRule):
             "mitre_tactic": "Exfiltration",
             "evidence_type": "POSSIBLE_DATA_EXFILTRATION",
         }
+
+
+def _sigma_fields(event: Event) -> Dict[str, Any]:
+    """
+    The dict rules.sigma.engine.SigmaEngine matches against: event-level columns
+    (hostname/user_name — real Event ORM columns, models/event.py) merged with
+    metadata_. Phase 16 / D-3 fix: the pre-Phase-16 call site
+    (detection/engine.py's _record_match) passed only ``_event_metadata(event)``,
+    so any Sigma rule referencing Computer/User (extremely common in real rules,
+    e.g. excluding SYSTEM/LOCAL SERVICE accounts) could never match — those
+    fields were never even in the dict being searched. metadata_ keys win on
+    collision (more specific than the coarse event-level columns).
+    """
+    fields: Dict[str, Any] = {"hostname": event.hostname, "user_name": event.user_name}
+    fields.update(_event_metadata(event))
+    return fields
+
+
+class SigmaDetectionRule(BaseDetectionRule):
+    """
+    Phase 16 / D-3. Wraps rules.sigma.engine.sigma_engine so a genuine Sigma-only
+    match — no native Python rule in this file also matching the same event —
+    can independently create or correlate a case, through the exact same
+    extension point every rule above already uses (DetectionEngine.rules), not
+    a parallel detection path or a rewrite of the engine's own loop.
+
+    This is distinct from detection/engine.py's separate, pre-existing inline
+    ``sigma_engine.evaluate()`` call inside ``_record_match``, which continues
+    unchanged: it still annotates whichever *native* rule's own evidence with
+    "Matched Sigma Rule: ..." when a Sigma rule happens to also match the same
+    event. Before this class existed, that inline call was the Sigma engine's
+    *only* integration point — a Sigma rule could never be the reason a case
+    got created at all, only decorate one a native rule already created (the
+    exact "used only to bump importance score" characterization from the
+    original D-3 audit finding). This class closes that gap.
+
+    match()/explain() each independently recompute the Sigma evaluation from
+    ``event`` rather than caching a match list on ``self`` between calls —
+    ``self`` is one long-lived instance shared by every event
+    (``detection_engine`` is a module-level singleton), so any state stored
+    between match() and explain() would be a correctness hazard under
+    concurrent event processing. Recomputing is cheap: a handful of rules,
+    pure string/regex comparisons, no I/O.
+    """
+
+    async def match(self, event: Event) -> bool:
+        from rules.sigma.engine import sigma_engine
+        c_type = taxonomy_normalizer.normalize(event.event_type, event.raw_log)
+        return bool(sigma_engine.evaluate(_sigma_fields(event), canonical_event_type=c_type.value))
+
+    def explain(self, event: Event) -> Dict[str, Any]:
+        from rules.sigma.engine import sigma_engine
+        c_type = taxonomy_normalizer.normalize(event.event_type, event.raw_log)
+        matches = sigma_engine.evaluate(_sigma_fields(event), canonical_event_type=c_type.value)
+        # match() guarantees at least one match reaches explain() via DetectionEngine's
+        # own if-match-then-explain sequencing; this empty case is a defensive fallback,
+        # not an expected path.
+        if not matches:
+            return {
+                "description": "Sigma rule match could not be re-evaluated for explanation.",
+                "severity": Severity.MEDIUM,
+                "mitre_technique_id": None,
+                "mitre_technique_name": "Sigma Match",
+                "mitre_tactic": "Uncategorized",
+                "evidence_type": "SIGMA_MATCH",
+            }
+
+        _rank = {"LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
+        rule = max(matches, key=lambda r: _rank.get(r.severity, 0))
+        other_titles = [m.title for m in matches if m is not rule]
+        extra = f" Also matched: {', '.join(other_titles)}." if other_titles else ""
+        description_suffix = f" {rule.description}" if rule.description else ""
+
+        mitre = rule.mitre
+        return {
+            "description": f"Sigma rule matched: \"{rule.title}\".{description_suffix}{extra}",
+            "severity": _SEVERITY_FROM_EVENT_STRING.get(rule.severity, Severity.MEDIUM),
+            # No fabricated technique ID when the rule's own tags don't resolve against
+            # the local ATT&CK reference (security/mitre/knowledge_base.py) — None here,
+            # not a placeholder string; detection/engine.py skips AttackTechnique
+            # creation for a None id rather than writing a fake one.
+            "mitre_technique_id": mitre.technique_id,
+            "mitre_technique_name": mitre.technique_name or rule.title,
+            "mitre_tactic": mitre.tactic or "Uncategorized",
+            "evidence_type": "SIGMA_MATCH",
+        }

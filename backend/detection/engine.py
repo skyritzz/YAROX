@@ -3,6 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from datetime import datetime, timezone
 
+from core.taxonomy import taxonomy_normalizer
 from models.event import Event
 from models.investigation import InvestigationCase, EvidenceItem, InvestigationStatus, Severity
 from models.mitre import AttackTechnique
@@ -15,7 +16,9 @@ from detection.rules import (
     NetworkIntrusionAlert,
     DataStagingViaArchiveUtility,
     LargeExternalDataTransfer,
+    SigmaDetectionRule,
     _event_metadata,
+    _sigma_fields,
 )
 
 SEVERITY_ORDER = {
@@ -35,6 +38,7 @@ class DetectionEngine:
             NetworkIntrusionAlert(),
             DataStagingViaArchiveUtility(),
             LargeExternalDataTransfer(),
+            SigmaDetectionRule(),
         ]
 
     async def process_event(self, db: AsyncSession, event: Event) -> InvestigationCase | None:
@@ -98,13 +102,22 @@ class DetectionEngine:
 
             db.add(case)
 
-        # Evaluate Sigma Rules
+        # Evaluate Sigma Rules — Phase 16 / D-3: now passes the same richer fields
+        # dict (event-level hostname/user_name merged with metadata_) SigmaDetectionRule
+        # uses below, and restricts by logsource-category via canonical_event_type.
+        # Previously this passed only _event_metadata(event), so a Sigma rule
+        # referencing Computer/User could never match (those fields weren't in the
+        # dict at all) — see detection/rules.py's _sigma_fields() docstring.
         from rules.sigma.engine import sigma_engine
-        matches = sigma_engine.evaluate(_event_metadata(event))
+        c_type = taxonomy_normalizer.normalize(event.event_type, event.raw_log)
+        matches = sigma_engine.evaluate(_sigma_fields(event), canonical_event_type=c_type.value)
 
         sigma_reason = ""
         sigma_risk = 0.8
-        if matches:
+        # Skip the annotation when the matching rule IS the Sigma wrapper itself —
+        # its own explain() already cites the matched Sigma rule(s) as the primary
+        # description; appending the same citation again here would just duplicate it.
+        if matches and not isinstance(rule, SigmaDetectionRule):
             sigma_reason = f"\n\nMatched Sigma Rule: {', '.join([r.title for r in matches])}"
             sigma_risk = 0.92
 
@@ -145,24 +158,31 @@ class DetectionEngine:
             db.add(evidence)
 
         # Create MITRE Technique if it doesn't already exist for this case (Deduplication)
+        # Phase 16 / D-3: mitre_technique_id can now legitimately be None —
+        # SigmaDetectionRule does not fabricate a technique ID when a matched
+        # rule's own tags don't resolve against the local ATT&CK reference (see
+        # its explain()). Every pre-existing native rule always supplies a real
+        # ID, so this is purely additive: no AttackTechnique row is created (or
+        # looked up) when there is no real technique to assert.
         tech_id = explanation['mitre_technique_id']
-        existing_tech = await db.execute(
-            select(AttackTechnique).where(
-                AttackTechnique.case_id == case.id,
-                AttackTechnique.technique_id == tech_id
+        if tech_id:
+            existing_tech = await db.execute(
+                select(AttackTechnique).where(
+                    AttackTechnique.case_id == case.id,
+                    AttackTechnique.technique_id == tech_id
+                )
             )
-        )
-        if not existing_tech.scalars().first():
-            mitre = AttackTechnique(
-                case_id=case.id,
-                technique_id=tech_id,
-                technique_name=explanation['mitre_technique_name'],
-                tactic=explanation['mitre_tactic'],
-                # Deterministic rule match: the technique is asserted by the rule itself
-                confidence=1.0,
-                reason=explanation['description']
-            )
-            db.add(mitre)
+            if not existing_tech.scalars().first():
+                mitre = AttackTechnique(
+                    case_id=case.id,
+                    technique_id=tech_id,
+                    technique_name=explanation['mitre_technique_name'],
+                    tactic=explanation['mitre_tactic'],
+                    # Deterministic rule match: the technique is asserted by the rule itself
+                    confidence=1.0,
+                    reason=explanation['description']
+                )
+                db.add(mitre)
 
         await db.commit()
 
