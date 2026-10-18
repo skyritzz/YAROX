@@ -79,6 +79,8 @@ services:
       - LLM_PROVIDER=${LLM_PROVIDER:-ollama}
       - LLM_MODEL=${LLM_MODEL:-llama3.1}
       - LLM_BASE_URL=${LLM_BASE_URL:-}
+      - LLM_ALLOW_EXTERNAL_PROVIDERS=${LLM_ALLOW_EXTERNAL_PROVIDERS:-false}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - LLM_MAX_CONCURRENCY=${LLM_MAX_CONCURRENCY:-2}
       - JWT_SECRET_KEY=${JWT_SECRET_KEY:-yarox-dev-insecure-secret-key-change-in-production-2026-phase4a}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:3002,http://127.0.0.1:3000,http://127.0.0.1:3002}
@@ -103,6 +105,8 @@ services:
       - LLM_PROVIDER=${LLM_PROVIDER:-ollama}
       - LLM_MODEL=${LLM_MODEL:-llama3.1}
       - LLM_BASE_URL=${LLM_BASE_URL:-}
+      - LLM_ALLOW_EXTERNAL_PROVIDERS=${LLM_ALLOW_EXTERNAL_PROVIDERS:-false}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - LLM_MAX_CONCURRENCY=${LLM_MAX_CONCURRENCY:-2}
       - CELERY_BROKER_URL=${REDIS_URL:-redis://redis:6379/0}
       - CELERY_RESULT_BACKEND=${REDIS_URL:-redis://redis:6379/0}

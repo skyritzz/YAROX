@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from core.config import settings
 from services.llm.providers import (
     AnthropicProvider,
+    GeminiProvider,
     ProviderAvailability,
     LLMConfigurationError,
     LLMInvalidOutput,
@@ -188,6 +189,8 @@ class _Settings:
     VLLM_BASE_URL = "http://vllm:8000"
     ANTHROPIC_BASE_URL = "https://api.anthropic.com"
     ANTHROPIC_API_KEY = ""
+    GEMINI_BASE_URL = "https://generativelanguage.googleapis.com"
+    GEMINI_API_KEY = ""
     LLM_ALLOW_EXTERNAL_PROVIDERS = False
     LLM_TIMEOUT_SECONDS = 30.0
 
@@ -235,3 +238,46 @@ def test_unknown_provider_is_rejected():
 def test_configured_provider_is_local_by_default_in_this_deployment():
     assert settings.LLM_PROVIDER == "ollama"
     assert settings.LLM_ALLOW_EXTERNAL_PROVIDERS is False
+
+
+def test_gemini_provider_requires_opt_in_and_key():
+    cfg = _Settings()
+    cfg.LLM_PROVIDER = "gemini"
+    cfg.GEMINI_API_KEY = "test-key"
+    with pytest.raises(LLMConfigurationError, match="outside the deployment"):
+        build_provider(cfg)
+
+    cfg.LLM_ALLOW_EXTERNAL_PROVIDERS = True
+    provider = build_provider(cfg)
+    assert isinstance(provider, GeminiProvider)
+    assert provider.base_url == "https://generativelanguage.googleapis.com"
+
+    cfg.GEMINI_API_KEY = ""
+    with pytest.raises(LLMConfigurationError, match="GEMINI_API_KEY"):
+        build_provider(cfg)
+
+
+@pytest.mark.asyncio
+async def test_gemini_generate_parses_candidates_and_sends_key_in_header(monkeypatch):
+    captured = {}
+
+    class _Resp:
+        def raise_for_status(self): pass
+        def json(self):
+            return {"candidates": [{"content": {"parts": [{"text": "{\"a\":"}, {"text": "1}"}]}}]}
+
+    class _Client:
+        def __init__(self, *a, **k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, url, json=None, headers=None):
+            captured.update(url=url, json=json, headers=headers)
+            return _Resp()
+
+    monkeypatch.setattr("services.llm.providers.httpx.AsyncClient", _Client)
+    provider = GeminiProvider("gemini-2.5-flash", "https://g.example", 5.0, "k123")
+    out = await provider.generate("hi", json_output=True)
+    assert out == '{"a":1}'
+    assert "k123" not in captured["url"]
+    assert captured["headers"]["x-goog-api-key"] == "k123"
+    assert captured["json"]["generationConfig"]["responseMimeType"] == "application/json"

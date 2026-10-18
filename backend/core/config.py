@@ -29,13 +29,15 @@ class Settings(BaseSettings):
 
     # ---- LLM provider -------------------------------------------------------------
     # Local inference is the default: security telemetry must not leave the deployment.
-    # External providers (anthropic) require LLM_ALLOW_EXTERNAL_PROVIDERS=true.
-    LLM_PROVIDER: str = "ollama"          # ollama | vllm | anthropic
+    # External providers (anthropic, gemini) require LLM_ALLOW_EXTERNAL_PROVIDERS=true.
+    LLM_PROVIDER: str = "ollama"          # ollama | vllm | anthropic | gemini
     LLM_MODEL: str = "llama3.1"
     LLM_BASE_URL: str = ""                 # falls back to the provider-specific URL below
     VLLM_BASE_URL: str = "http://vllm:8000"
     ANTHROPIC_BASE_URL: str = "https://api.anthropic.com"
     ANTHROPIC_API_KEY: str = ""
+    GEMINI_BASE_URL: str = "https://generativelanguage.googleapis.com"
+    GEMINI_API_KEY: str = ""
     LLM_ALLOW_EXTERNAL_PROVIDERS: bool = False
     LLM_TIMEOUT_SECONDS: float = 180.0
     LLM_MAX_ATTEMPTS: int = 3

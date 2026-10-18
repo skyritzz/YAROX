@@ -182,12 +182,62 @@ class AnthropicProvider(LLMProvider):
         return ProviderAvailability(bool(self.api_key), bool(self.api_key), "API key configured" if self.api_key else "no API key")
 
 
+class GeminiProvider(LLMProvider):
+    """
+    External provider (Google Gemini, Generative Language API). Like Anthropic, it sends
+    prompts outside the deployment, so it is only constructed when
+    ``LLM_ALLOW_EXTERNAL_PROVIDERS`` is true and an API key is configured.
+    """
+
+    name = "gemini"
+
+    def __init__(self, model: str, base_url: str, timeout_seconds: float, api_key: str):
+        super().__init__(model, base_url, timeout_seconds)
+        if not api_key:
+            raise LLMConfigurationError("GEMINI_API_KEY is required for the gemini provider")
+        self.api_key = api_key
+
+    def _headers(self) -> Dict[str, str]:
+        # Key goes in a header, not the URL, so it never lands in access logs
+        return {"x-goog-api-key": self.api_key, "content-type": "application/json"}
+
+    async def generate(self, prompt: str, *, json_output: bool = False, context_tokens: Optional[int] = None) -> str:
+        generation_config: Dict[str, Any] = {"temperature": 0.0}
+        if json_output:
+            generation_config["responseMimeType"] = "application/json"
+        payload = {
+            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+            "generationConfig": generation_config,
+        }
+        url = f"{self.base_url}/v1beta/models/{self.model}:generateContent"
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+                response = await client.post(url, json=payload, headers=self._headers())
+                response.raise_for_status()
+                data = response.json()
+        except httpx.HTTPStatusError as e:
+            raise LLMUnavailable(f"Gemini returned HTTP {e.response.status_code}: {e.response.text[:200]}") from e
+        except Exception as e:
+            raise LLMUnavailable(f"Gemini request failed: {type(e).__name__}: {e}") from e
+        try:
+            parts = data["candidates"][0]["content"]["parts"]
+        except (KeyError, IndexError, TypeError) as e:
+            reason = (data.get("promptFeedback") or {}).get("blockReason") if isinstance(data, dict) else None
+            raise LLMInvalidOutput(f"Unexpected Gemini response shape (blockReason={reason}): {e}") from e
+        return "".join(part.get("text", "") for part in parts)
+
+    async def availability(self) -> ProviderAvailability:
+        # No network probe: an external provider is not contacted just to report health
+        return ProviderAvailability(bool(self.api_key), bool(self.api_key), "API key configured" if self.api_key else "no API key")
+
+
 PROVIDERS = {
     OllamaProvider.name: OllamaProvider,
     VLLMProvider.name: VLLMProvider,
     AnthropicProvider.name: AnthropicProvider,
+    GeminiProvider.name: GeminiProvider,
 }
-EXTERNAL_PROVIDERS = {AnthropicProvider.name}
+EXTERNAL_PROVIDERS = {AnthropicProvider.name, GeminiProvider.name}
 
 
 def build_provider(settings) -> LLMProvider:
@@ -204,6 +254,11 @@ def build_provider(settings) -> LLMProvider:
         return AnthropicProvider(
             model=settings.LLM_MODEL, base_url=settings.ANTHROPIC_BASE_URL,
             timeout_seconds=settings.LLM_TIMEOUT_SECONDS, api_key=settings.ANTHROPIC_API_KEY,
+        )
+    if name == GeminiProvider.name:
+        return GeminiProvider(
+            model=settings.LLM_MODEL, base_url=settings.LLM_BASE_URL or settings.GEMINI_BASE_URL,
+            timeout_seconds=settings.LLM_TIMEOUT_SECONDS, api_key=settings.GEMINI_API_KEY,
         )
     base_url = settings.LLM_BASE_URL or (settings.OLLAMA_BASE_URL if name == "ollama" else settings.VLLM_BASE_URL)
     return PROVIDERS[name](
